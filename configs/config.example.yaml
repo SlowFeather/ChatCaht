@@ -1,0 +1,60 @@
+paths:
+  artifacts_dir: artifacts
+  logs_dir: artifacts/logs
+  output_dir: artifacts/output
+
+lmstudio:
+  base_url: http://127.0.0.1:1234/v1
+  model: qwopus3.5-9b-coder
+  api_key: lm-studio
+  temperature: 0.6
+  max_tokens: 512
+  timeout_sec: 60
+
+wake:
+  enabled: true
+  mode: service
+  url: ws://127.0.0.1:8766/v1/wake/ws
+  auto_start_listening: true
+  trigger_words: ["小元", "你好小元"]
+
+stt:
+  enabled: true
+  mode: service
+  url: ws://127.0.0.1:8790/v1/stt/ws
+  auto_start_listening: true
+  final_events_only: true
+
+tts:
+  enabled: true
+  mode: service
+  url: ws://127.0.0.1:8787/v1/tts/ws
+  speaker:
+  speaker_id:
+  speed: 1.0
+  save_last_response_wav: false
+
+duplex:
+  start_mode: wake
+  allow_barge_in: true
+  cancel_tts_on_user_speech: true
+  end_session_words: ["退出", "停止聊天", "再见"]
+  system_prompt: >
+    你是一个运行在本地电脑上的中文实时语音助手。
+    回答要自然、简洁、适合直接朗读。需要写代码时保持清晰严谨。
+  max_history_turns: 8
+
+runtime:
+  log_level: INFO
+  health_timeout_sec: 5
+  mock_text_inputs: []
+
+services:
+  uv_executable: uv
+  wakeup_dir: ../WakeUp/WakeUp_Project
+  wakeup_config: configs/config.yaml
+  sptext_dir: ../SpText
+  sptext_config: configs/config.example.yaml
+  gvoice_dir: ../GVoice
+  gvoice_config: configs/config.yaml
+  startup_timeout_sec: 20

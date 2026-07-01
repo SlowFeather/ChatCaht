@@ -1,0 +1,13 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+artifacts/logs/*
+artifacts/run/*
+artifacts/output/*
+!artifacts/logs/.gitkeep
+!artifacts/run/.gitkeep
+!artifacts/output/.gitkeep

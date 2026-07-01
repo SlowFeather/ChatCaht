@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chatcaht"
+version = "0.1.0"
+description = "Full-duplex wake-word AI voice chat orchestrator for local LM Studio, WakeUp/Wakord, SpText, and GVoice"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "SlowFeather" }]
+dependencies = [
+    "httpx>=0.27",
+    "numpy<2",
+    "pyyaml>=6",
+    "sounddevice",
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+chatcaht = "chatcaht.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
