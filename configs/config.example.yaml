@@ -73,7 +73,7 @@ supervisor:
 
 services:
   uv_executable: uv
-  wakeup_dir: ../WakeUp/WakeUp_Project
+  wakeup_dir: ../WakeUp
   wakeup_config: configs/config.yaml
   sptext_dir: ../SpText
   sptext_config: configs/config.example.yaml
