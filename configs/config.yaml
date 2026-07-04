@@ -43,32 +43,23 @@ duplex:
     你是一个运行在本地电脑上的中文实时语音助手。
     回答要自然、简洁、适合直接朗读。需要写代码时保持清晰严谨。
   max_history_turns: 8
-  # 会话结束后回到待唤醒状态（随时可再次唤醒），而不是退出程序
   loop_forever: true
-  # 对话中连续无语音超过该秒数自动回到待唤醒；0 表示禁用
   idle_timeout_sec: 60
-  # 唤醒成功后播报的应答语；留空则不播报
   wake_ack_text: "我在"
-  # 重新唤醒开启新会话时是否清空对话历史
   reset_history_per_session: false
 
 runtime:
   log_level: INFO
   health_timeout_sec: 5
   mock_text_inputs: []
-  # WebSocket 断开后的重连退避（秒），指数增长到最大值
   reconnect_initial_delay_sec: 1
   reconnect_max_delay_sec: 30
 
 supervisor:
-  # chatcaht run 模式下自动拉起并守护 WakeUp/SpText/GVoice
   manage_services: true
-  # 会话崩溃后的重启退避（秒）
   restart_delay_sec: 2
   max_restart_delay_sec: 60
-  # 会话稳定运行超过该秒数后重置重启退避
   stable_run_sec: 300
-  # 周期健康检查间隔（秒），不健康的服务会被自动重启
   health_check_interval_sec: 30
 
 services:

@@ -6,8 +6,8 @@ from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
 from .config import Config
-from .lmstudio import LmStudioClient
 from .models import HealthCheck
+from .openai_client import OpenAICompatibleClient
 
 
 async def run_health_checks(cfg: Config) -> list[HealthCheck]:
@@ -15,13 +15,13 @@ async def run_health_checks(cfg: Config) -> list[HealthCheck]:
     wake = create_wake_client(cfg.wake, timeout=timeout)
     stt = create_stt_client(cfg.stt, mock_inputs=cfg.runtime.mock_text_inputs, timeout=timeout)
     tts = create_tts_client(cfg.tts, timeout=timeout)
-    lm = LmStudioClient(cfg.lmstudio)
+    lm = OpenAICompatibleClient(cfg.openai)
     try:
         checks = await asyncio.gather(
             _check("wake", wake.health()),
             _check("stt", stt.health()),
             _check("tts", tts.health()),
-            _check("lmstudio", lm.health()),
+            _check("openai", lm.health()),
         )
     finally:
         await lm.close()

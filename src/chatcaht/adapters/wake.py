@@ -11,6 +11,8 @@ from chatcaht.models import WakeEvent
 
 
 class WakeClient:
+    restart_on_stream_error = False
+
     async def health(self) -> tuple[bool, str]:
         raise NotImplementedError
 
@@ -60,6 +62,8 @@ class MockWakeClient(WakeClient):
 
 
 class ServiceWakeClient(WakeClient):
+    restart_on_stream_error = True
+
     def __init__(self, cfg: WakeConfig, timeout: float = 5.0):
         self.cfg = cfg
         self.timeout = timeout
@@ -84,7 +88,7 @@ class ServiceWakeClient(WakeClient):
         await self._command("stop")
 
     async def events(self) -> AsyncIterator[WakeEvent]:
-        async with websockets.connect(self.cfg.url, max_size=None) as ws:
+        async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
             await ws.recv()
             if self.cfg.auto_start_listening:
                 await ws.send(json.dumps({"type": "start"}))
@@ -101,7 +105,7 @@ class ServiceWakeClient(WakeClient):
                     )
 
     async def _command(self, cmd: str) -> dict | None:
-        async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
+        async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
             await ws.recv()
             await ws.send(json.dumps({"type": cmd}))
             while True:

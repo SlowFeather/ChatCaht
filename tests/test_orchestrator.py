@@ -10,7 +10,7 @@ from chatcaht.adapters.wake import MockWakeClient
 from chatcaht.audio import NullAudioSink
 from chatcaht.config import Config
 from chatcaht.models import Transcript, TranscriptKind
-from chatcaht.orchestrator import SentenceBuffer, VoiceSession
+from chatcaht.orchestrator import ChatModel, SentenceBuffer, VoiceSession
 from chatcaht.selftest import ScriptedModel, run_selftest
 
 
@@ -54,3 +54,151 @@ async def test_barge_in_cancels_current_response() -> None:
     assert session.stats.interruptions == 1
     assert model.calls == 2
     assert session.stats.assistant_turns == 1
+
+
+@pytest.mark.asyncio
+async def test_session_handles_100_turns_without_history_growth() -> None:
+    cfg = Config()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=ScriptedModel(["ok."]),
+        audio=NullAudioSink(),
+    )
+
+    for index in range(100):
+        await session.handle_transcript(Transcript(f"turn {index}", TranscriptKind.FINAL))
+        await session.wait_for_idle()
+
+    assert session.stats.user_turns == 100
+    assert session.stats.assistant_turns == 100
+    assert len(session._history) <= cfg.duplex.max_history_turns * 2 + 1
+
+
+@pytest.mark.asyncio
+async def test_response_failure_does_not_stop_later_turns() -> None:
+    cfg = Config()
+    cfg.duplex.start_mode = "manual"
+    model = FailingOnceModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient(["first", "second"], turn_delay=0.01),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    stats = await asyncio.wait_for(session.run(), timeout=5)
+
+    assert model.calls == 2
+    assert stats.user_turns == 2
+    assert stats.assistant_turns == 1
+
+
+@pytest.mark.asyncio
+async def test_stt_stream_restarts_after_disconnect() -> None:
+    cfg = Config()
+    cfg.duplex.start_mode = "manual"
+    stt = FlakySttClient()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=stt,
+        tts=MockTtsClient(),
+        llm=ScriptedModel(["ok."]),
+        audio=NullAudioSink(),
+    )
+
+    stats = await asyncio.wait_for(session.run(), timeout=5)
+
+    assert stt.starts == 2
+    assert stats.user_turns == 1
+    assert stats.assistant_turns == 1
+
+
+@pytest.mark.asyncio
+async def test_wake_trigger_is_ignored_during_active_conversation() -> None:
+    cfg = Config()
+    model = ScriptedModel(["ok."])
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+        wake_trigger_words=["小元", "你好小元"],
+    )
+
+    await session.handle_transcript(Transcript("小元", TranscriptKind.FINAL))
+    await session.handle_transcript(Transcript("你好小元。", TranscriptKind.FINAL))
+
+    assert model.calls == 0
+    assert session.stats.user_turns == 0
+    assert session.stats.assistant_turns == 0
+
+
+@pytest.mark.asyncio
+async def test_wake_trigger_prefix_is_removed_during_active_conversation() -> None:
+    cfg = Config()
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+        wake_trigger_words=["小元", "你好小元"],
+    )
+
+    await session.handle_transcript(Transcript("小元，帮我查一下天气", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert model.calls == 1
+    assert model.last_user_message == "帮我查一下天气"
+    assert session.stats.user_turns == 1
+
+
+class FailingOnceModel(ChatModel):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream_chat(self, messages: list[dict[str, str]]):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("llm failed")
+        yield "recovered."
+
+
+class FlakySttClient(MockSttClient):
+    restart_on_stream_error = True
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.starts = 0
+
+    async def start(self) -> None:
+        self.starts += 1
+        await super().start()
+
+    async def transcripts(self):
+        if self.starts == 1:
+            raise RuntimeError("stt disconnected")
+        yield Transcript("after reconnect", TranscriptKind.FINAL)
+        await self.stop()
+
+
+class CapturingModel(ChatModel):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.last_user_message = ""
+
+    async def stream_chat(self, messages: list[dict[str, str]]):
+        self.calls += 1
+        user_messages = [message["content"] for message in messages if message["role"] == "user"]
+        self.last_user_message = user_messages[-1]
+        yield "ok."

@@ -11,6 +11,9 @@ from chatcaht.models import Transcript, TranscriptKind
 
 
 class SttClient:
+    restart_on_stream_end = False
+    restart_on_stream_error = False
+
     async def health(self) -> tuple[bool, str]:
         raise NotImplementedError
 
@@ -64,6 +67,9 @@ class MockSttClient(SttClient):
 
 
 class ServiceSttClient(SttClient):
+    restart_on_stream_end = True
+    restart_on_stream_error = True
+
     def __init__(self, cfg: SttConfig, timeout: float = 5.0):
         self.cfg = cfg
         self.timeout = timeout
@@ -87,7 +93,7 @@ class ServiceSttClient(SttClient):
         await self._command("stop")
 
     async def transcripts(self) -> AsyncIterator[Transcript]:
-        async with websockets.connect(self.cfg.url, max_size=None) as ws:
+        async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
             if self.cfg.auto_start_listening:
                 await ws.send(json.dumps({"type": "start"}))
             async for raw in ws:

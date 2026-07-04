@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import wave
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class AudioSink:
@@ -50,6 +53,8 @@ class WaveFileSink(AudioSink):
 class SoundDeviceSink(AudioSink):
     def __init__(self) -> None:
         self._stream = None
+        self._sample_rate: int | None = None
+        self._channels: int | None = None
 
     async def play(self, pcm: bytes, *, sample_rate: int, channels: int = 1) -> None:
         await asyncio.to_thread(self._write, pcm, sample_rate, channels)
@@ -58,8 +63,15 @@ class SoundDeviceSink(AudioSink):
         stream = self._stream
         self._stream = None
         if stream is not None:
-            await asyncio.to_thread(stream.stop)
-            await asyncio.to_thread(stream.close)
+            try:
+                # abort 立即丢弃缓冲，保证打断时马上停声
+                await asyncio.to_thread(stream.abort)
+            except Exception:
+                logger.exception("failed to abort audio stream")
+            try:
+                await asyncio.to_thread(stream.close)
+            except Exception:
+                logger.exception("failed to close audio stream")
 
     def _write(self, pcm: bytes, sample_rate: int, channels: int) -> None:
         import numpy as np
@@ -68,7 +80,25 @@ class SoundDeviceSink(AudioSink):
         samples = np.frombuffer(pcm, dtype=np.int16)
         if channels > 1:
             samples = samples.reshape((-1, channels))
+        if self._stream is not None and (sample_rate != self._sample_rate or channels != self._channels):
+            with_suppress_close(self._stream)
+            self._stream = None
         if self._stream is None:
             self._stream = sd.OutputStream(samplerate=sample_rate, channels=channels, dtype="int16")
             self._stream.start()
-        self._stream.write(samples)
+            self._sample_rate = sample_rate
+            self._channels = channels
+        stream = self._stream
+        if stream is not None:
+            stream.write(samples)
+
+
+def with_suppress_close(stream) -> None:
+    try:
+        stream.abort()
+    except Exception:
+        pass
+    try:
+        stream.close()
+    except Exception:
+        pass

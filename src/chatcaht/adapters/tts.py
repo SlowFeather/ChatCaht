@@ -66,7 +66,7 @@ class ServiceTtsClient(TtsClient):
         if self.cfg.speaker_id is not None:
             payload["speaker_id"] = self.cfg.speaker_id
 
-        async with websockets.connect(self.cfg.url, max_size=None) as ws:
+        async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
             await ws.send(json.dumps(payload, ensure_ascii=False))
             await ws.send(json.dumps({"type": "flush"}))
             async for raw in ws:

@@ -12,11 +12,12 @@ from .adapters.wake import create_wake_client
 from .audio import NullAudioSink, SoundDeviceSink, WaveFileSink
 from .config import Config, load_config
 from .health import run_health_checks
-from .lmstudio import LmStudioClient
 from .logging import setup_logging
+from .openai_client import OpenAICompatibleClient
 from .orchestrator import VoiceSession
 from .service_manager import ServiceManager
 from .selftest import run_selftest
+from .supervisor import Supervisor
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,12 +30,19 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
+def default_config_path() -> str:
+    for candidate in ("configs/config.yaml", "configs/config.example.yaml"):
+        if Path(candidate).exists():
+            return candidate
+    return "configs/config.example.yaml"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="chatcaht", description="Full-duplex local AI voice chat orchestrator")
-    parser.add_argument("--config", default="configs/config.example.yaml", help="Path to ChatCaht YAML config")
+    parser.add_argument("--config", default=default_config_path(), help="Path to ChatCaht YAML config")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="Check LM Studio and voice service connectivity")
+    sub.add_parser("doctor", help="Check OpenAI-compatible model API and voice service connectivity")
     sub.add_parser("selftest", help="Run mock end-to-end orchestration checks")
 
     services = sub.add_parser("services", help="Start, stop, or inspect WakeUp/SpText/GVoice services")
@@ -46,8 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--mock", action="store_true", help="Use mock wake/STT/TTS and configured mock_text_inputs")
     chat.add_argument("--no-audio", action="store_true", help="Discard TTS audio instead of playing it")
     chat.add_argument("--save-wav", help="Save synthesized audio to a WAV file instead of playing it")
+    chat.add_argument("--once", action="store_true", help="Exit after one conversation instead of returning to wake standby")
 
-    text = sub.add_parser("text", help="Send one text prompt to LM Studio")
+    run = sub.add_parser("run", help="Long-running daemon: manage services, auto-restart, wake anytime")
+    run.add_argument("--no-services", action="store_true", help="Do not start/supervise WakeUp/SpText/GVoice services")
+    run.add_argument("--no-audio", action="store_true", help="Discard TTS audio instead of playing it")
+
+    text = sub.add_parser("text", help="Send one text prompt to the configured OpenAI-compatible model API")
     text.add_argument("prompt", nargs="+")
 
     init = sub.add_parser("init-config", help="Copy the example config to a writable path")
@@ -72,6 +85,8 @@ async def _amain(args: argparse.Namespace) -> int:
         return await _services(cfg, args)
     if args.command == "chat":
         return await _chat(cfg, args)
+    if args.command == "run":
+        return await _run_daemon(cfg, args)
     if args.command == "text":
         return await _text(cfg, " ".join(args.prompt))
     raise AssertionError(args.command)
@@ -139,15 +154,27 @@ async def _chat(cfg: Config, args: argparse.Namespace) -> int:
         cfg.wake.mode = "mock"
         cfg.stt.mode = "mock"
         cfg.tts.mode = "mock"
+        cfg.duplex.loop_forever = False
         if not cfg.runtime.mock_text_inputs:
             cfg.runtime.mock_text_inputs = ["你好，介绍一下你自己。", "退出"]
+    if args.once:
+        cfg.duplex.loop_forever = False
 
     wake = create_wake_client(cfg.wake, timeout=cfg.runtime.health_timeout_sec)
     stt = create_stt_client(cfg.stt, mock_inputs=cfg.runtime.mock_text_inputs, timeout=cfg.runtime.health_timeout_sec)
     tts = create_tts_client(cfg.tts, timeout=cfg.runtime.health_timeout_sec)
-    lm = LmStudioClient(cfg.lmstudio)
+    lm = OpenAICompatibleClient(cfg.openai)
     audio = _create_audio_sink(cfg, args)
-    session = VoiceSession(duplex=cfg.duplex, wake=wake, stt=stt, tts=tts, llm=lm, audio=audio)
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=wake,
+        stt=stt,
+        tts=tts,
+        llm=lm,
+        audio=audio,
+        wake_trigger_words=cfg.wake.trigger_words,
+        runtime=cfg.runtime,
+    )
 
     print("ChatCaht 已启动。按 Ctrl+C 停止。")
     try:
@@ -156,16 +183,34 @@ async def _chat(cfg: Config, args: argparse.Namespace) -> int:
         await lm.close()
     print(
         "会话结束: "
-        f"wake={session.stats.wake_events}, user={session.stats.user_turns}, "
-        f"assistant={session.stats.assistant_turns}, interrupts={session.stats.interruptions}"
+        f"conversations={session.stats.conversations}, wake={session.stats.wake_events}, "
+        f"user={session.stats.user_turns}, assistant={session.stats.assistant_turns}, "
+        f"interrupts={session.stats.interruptions}"
     )
     return 0
 
 
+async def _run_daemon(cfg: Config, args: argparse.Namespace) -> int:
+    if args.no_services:
+        cfg.supervisor.manage_services = False
+    # 守护模式必须循环运行、随时可唤醒
+    cfg.duplex.loop_forever = True
+    if cfg.duplex.start_mode not in {"wake", "manual"}:
+        cfg.duplex.start_mode = "wake"
+
+    supervisor = Supervisor(cfg, audio_factory=lambda: _create_audio_sink(cfg, args))
+    print("ChatCaht 守护模式已启动：随时唤醒，自动恢复。按 Ctrl+C 停止。")
+    try:
+        return await supervisor.run()
+    except asyncio.CancelledError:
+        supervisor.request_stop()
+        raise
+
+
 def _create_audio_sink(cfg: Config, args: argparse.Namespace):
-    if args.no_audio:
+    if getattr(args, "no_audio", False):
         return NullAudioSink()
-    wav_path = args.save_wav
+    wav_path = getattr(args, "save_wav", None)
     if wav_path is None and cfg.tts.save_last_response_wav:
         wav_path = str(Path(cfg.paths.output_dir) / "last_response.wav")
     if wav_path:
@@ -177,7 +222,7 @@ def _create_audio_sink(cfg: Config, args: argparse.Namespace):
 
 
 async def _text(cfg: Config, prompt: str) -> int:
-    lm = LmStudioClient(cfg.lmstudio)
+    lm = OpenAICompatibleClient(cfg.openai)
     messages = [
         {"role": "system", "content": cfg.duplex.system_prompt},
         {"role": "user", "content": prompt},
