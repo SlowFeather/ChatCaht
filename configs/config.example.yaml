@@ -4,9 +4,9 @@ paths:
   output_dir: artifacts/output
 
 openai:
-  base_url: http://127.0.0.1:1234/v1
-  model: qwopus3.5-9b-coder
-  api_key: lm-studio
+  base_url: http://127.0.0.1:11434/v1
+  model: qwen3.5:9b
+  api_key: ollama
   temperature: 0.6
   max_tokens: 512
   timeout_sec: 60
