@@ -4,11 +4,11 @@ paths:
   output_dir: artifacts/output
 
 openai:
-  base_url: http://127.0.0.1:11434/v1
-  model: qwen3.5:9b
-  api_key: ollama
+  base_url: http://127.0.0.1:1234/v1
+  model: qwen/qwen3.5-9b
+  api_key: lm-studio
   temperature: 0.6
-  max_tokens: 512
+  max_tokens: 120
   timeout_sec: 60
   # 附加请求字段，原样并入 /chat/completions 请求体（按需增删）。
   # 思考型模型（如 qwen3.5）需要关掉思考，否则 content 为空且首字延迟极高。
@@ -39,7 +39,8 @@ tts:
   url: ws://127.0.0.1:8787/v1/tts/ws
   speaker:
   speaker_id:
-  speed: 1.0
+  # 留空时使用 GVoice 后端/说话人配置的默认语速；小于 1 会更慢。
+  speed:
   save_last_response_wav: false
 
 duplex:

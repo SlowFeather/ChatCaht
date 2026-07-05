@@ -55,7 +55,7 @@ class TtsConfig:
     url: str = "ws://127.0.0.1:8787/v1/tts/ws"
     speaker: str | None = None
     speaker_id: int | None = None
-    speed: float = 1.0
+    speed: float | None = None
     save_last_response_wav: bool = False
 
 
@@ -199,6 +199,8 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("stt.partial_fallback_sec must be >= 0 (0 disables partial fallback)")
     if cfg.stt.partial_min_chars < 1:
         raise ValueError("stt.partial_min_chars must be positive")
+    if cfg.tts.speed is not None and cfg.tts.speed <= 0:
+        raise ValueError("tts.speed must be positive when set")
     if cfg.services.startup_timeout_sec <= 0:
         raise ValueError("services.startup_timeout_sec must be positive")
     if cfg.duplex.idle_timeout_sec < 0:

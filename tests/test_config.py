@@ -9,7 +9,7 @@ from chatcaht.config import load_config
 
 def test_load_example_config() -> None:
     cfg = load_config(Path("configs/config.example.yaml"))
-    assert cfg.openai.model == "qwen3.5:9b"
+    assert cfg.openai.model == "qwen/qwen3.5-9b"
     assert cfg.wake.url == "ws://127.0.0.1:8766/v1/wake/ws"
     assert cfg.duplex.allow_barge_in is True
 

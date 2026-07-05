@@ -168,6 +168,7 @@ class ServiceSttClient(SttClient):
             remaining = self.cfg.partial_fallback_sec - elapsed
             if remaining <= 0:
                 logger.info("stt partial fallback promoted to final text=%s", pending.text)
+                self._schedule_reset_after_partial_fallback()
                 yield Transcript(
                     text=pending.text,
                     kind=TranscriptKind.FINAL,
@@ -180,6 +181,7 @@ class ServiceSttClient(SttClient):
                 raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
             except TimeoutError:
                 logger.info("stt partial fallback promoted to final text=%s", pending.text)
+                self._schedule_reset_after_partial_fallback()
                 yield Transcript(
                     text=pending.text,
                     kind=TranscriptKind.FINAL,
@@ -233,6 +235,18 @@ class ServiceSttClient(SttClient):
             pending = transcript
             pending_at = time.monotonic()
 
+    def _schedule_reset_after_partial_fallback(self) -> None:
+        task = asyncio.create_task(self._reset_service_after_partial_fallback())
+        task.add_done_callback(_log_background_task_error)
+
+    async def _reset_service_after_partial_fallback(self) -> None:
+        logger.info("stt resetting service after partial fallback to clear ASR segment state")
+        try:
+            await self.stop()
+            await self.start()
+        except Exception:
+            logger.exception("stt reset after partial fallback failed")
+
     async def _command(self, typ: str) -> dict | None:
         logger.debug("stt command: %s", typ)
         async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
@@ -277,6 +291,14 @@ def _summarize_message(msg: dict | None) -> dict | None:
         "segment_id",
     )
     return {key: msg.get(key) for key in keys if key in msg}
+
+
+def _log_background_task_error(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.exception("stt background reset task failed", exc_info=exc)
 
 
 def _optional_int(value) -> int | None:

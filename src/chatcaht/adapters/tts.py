@@ -63,8 +63,9 @@ class ServiceTtsClient(TtsClient):
         payload = {
             "type": "text",
             "text": text,
-            "speed": self.cfg.speed,
         }
+        if self.cfg.speed is not None:
+            payload["speed"] = self.cfg.speed
         if self.cfg.speaker:
             payload["speaker"] = self.cfg.speaker
         if self.cfg.speaker_id is not None:

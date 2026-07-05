@@ -163,6 +163,79 @@ async def test_wake_trigger_prefix_is_removed_during_active_conversation() -> No
     assert session.stats.user_turns == 1
 
 
+@pytest.mark.asyncio
+async def test_repeated_user_prefix_is_removed_from_stt_carryover() -> None:
+    cfg = Config()
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript("tomato or potato", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+    await session.handle_transcript(Transcript("tomato or potatowater or cola", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert model.calls == 2
+    assert model.last_user_message == "water or cola"
+
+
+@pytest.mark.asyncio
+async def test_accumulated_stt_finals_are_split_by_cached_turns() -> None:
+    cfg = Config()
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript("cola or sprite", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+    await session.handle_transcript(Transcript("cola or spritewatermelon", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+    await session.handle_transcript(Transcript("cola or spritewatermelon or cucumber", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    user_messages = [
+        message["content"]
+        for message in model.last_messages
+        if message["role"] == "user"
+    ]
+    assert model.calls == 3
+    assert user_messages == ["cola or sprite", "watermelon", "or cucumber"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_stt_final_is_ignored() -> None:
+    cfg = Config()
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript("same question", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+    await session.handle_transcript(Transcript("same question", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert model.calls == 1
+    assert session.stats.user_turns == 1
+
+
 class FailingOnceModel(ChatModel):
     def __init__(self) -> None:
         self.calls = 0
@@ -196,9 +269,11 @@ class CapturingModel(ChatModel):
     def __init__(self) -> None:
         self.calls = 0
         self.last_user_message = ""
+        self.last_messages: list[dict[str, str]] = []
 
     async def stream_chat(self, messages: list[dict[str, str]]):
         self.calls += 1
+        self.last_messages = messages
         user_messages = [message["content"] for message in messages if message["role"] == "user"]
         self.last_user_message = user_messages[-1]
         yield "ok."

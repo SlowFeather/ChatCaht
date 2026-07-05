@@ -36,25 +36,35 @@ async def test_service_stt_command_waits_for_matching_ack() -> None:
 
 @pytest.mark.asyncio
 async def test_service_stt_promotes_stale_partial_to_final() -> None:
+    commands: list[str] = []
+    sent_partial = False
+
     async def handler(ws):
+        nonlocal sent_partial
         await ws.send(json.dumps({"type": "status", "listening": True}))
         async for raw in ws:
             msg = json.loads(raw)
-            if msg.get("type") == "start":
+            cmd = msg.get("type")
+            commands.append(cmd)
+            if cmd == "start":
                 await ws.send(json.dumps({"type": "ack", "cmd": "start", "ok": True}))
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "transcript",
-                            "event": "partial",
-                            "is_final": False,
-                            "text": "今天天气怎么样",
-                            "source": "microphone",
-                            "segment_id": 7,
-                        },
-                        ensure_ascii=False,
+                if not sent_partial:
+                    sent_partial = True
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "transcript",
+                                "event": "partial",
+                                "is_final": False,
+                                "text": "今天天气怎么样",
+                                "source": "microphone",
+                                "segment_id": 7,
+                            },
+                            ensure_ascii=False,
+                        )
                     )
-                )
+            elif cmd == "stop":
+                await ws.send(json.dumps({"type": "ack", "cmd": "stop", "ok": True}))
 
     server = await websockets.serve(handler, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -70,6 +80,11 @@ async def test_service_stt_promotes_stale_partial_to_final() -> None:
         assert transcript.is_final
         assert transcript.text == "今天天气怎么样"
         assert transcript.segment_id == 7
+        for _ in range(20):
+            if commands[:3] == ["start", "stop", "start"]:
+                break
+            await asyncio.sleep(0.05)
+        assert commands[:3] == ["start", "stop", "start"]
         await stream.aclose()
     finally:
         server.close()

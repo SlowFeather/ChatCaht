@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 SENTENCE_ENDINGS = set("。！？!?；;\n")
 
 _STREAM_END = object()
+SHORT_REPLY_PROMPT = (
+    "回答必须简短自然，通常 1 到 2 句话。不要 Markdown、表情、长列表或客套铺垫；"
+    "除非用户明确要求展开，否则直接给结论。"
+)
 
 
 class ChatModel:
@@ -65,6 +69,8 @@ class VoiceSession:
         self.wake_trigger_words = [word.strip() for word in wake_trigger_words or [] if word.strip()]
         self.stats = SessionStats()
         self._history: list[dict[str, str]] = [{"role": "system", "content": duplex.system_prompt}]
+        self._user_turn_cache: dict[int, dict[str, str]] = {}
+        self._next_user_turn_id = 0
         self._current_response: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._session_end = asyncio.Event()
@@ -111,6 +117,7 @@ class VoiceSession:
                     await self.stt.stop()
                 if self.duplex.reset_history_per_session:
                     self._history = [{"role": "system", "content": self.duplex.system_prompt}]
+                    self._clear_user_turn_cache()
                 logger.info("returning to wake-word standby")
         finally:
             await self.stop()
@@ -241,12 +248,16 @@ class VoiceSession:
                 await self.stt.start()
 
     async def handle_transcript(self, transcript: Transcript) -> None:
-        text = transcript.text.strip()
-        if not text:
+        raw_text = transcript.text.strip()
+        if not raw_text:
             return
-        text = self._strip_active_wake_trigger(text)
-        if not text:
+        stt_text = self._strip_active_wake_trigger(raw_text)
+        if not stt_text:
             logger.info("wake trigger ignored during active conversation")
+            return
+        text = self._strip_repeated_user_prefix(stt_text)
+        if not text:
+            logger.info("stt transcript ignored after turn splitting")
             return
         logger.info("user transcript kind=%s text=%s", transcript.kind.value, text)
         self._touch_activity()
@@ -268,6 +279,7 @@ class VoiceSession:
         if transcript.is_final:
             print(f"\nUser: {text}", flush=True)
             self.stats.user_turns += 1
+            self._remember_user_turn(stt_text, text)
             self._current_response = asyncio.create_task(self._respond(text))
             self._current_response.add_done_callback(self._on_response_done)
 
@@ -283,11 +295,12 @@ class VoiceSession:
         self._append_history("user", user_text)
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=8)
         full_text: list[str] = []
+        messages = [*self._history, {"role": "system", "content": SHORT_REPLY_PROMPT}]
 
         async def produce_segments() -> None:
             buffer = SentenceBuffer()
             try:
-                async for token in self._stream_llm(list(self._history)):
+                async for token in self._stream_llm(messages):
                     full_text.append(token)
                     for segment in buffer.push(token):
                         await queue.put(segment)
@@ -419,6 +432,53 @@ class VoiceSession:
             if text.endswith(word):
                 return _trim_wake_separators(text[: -len(word)])
         return text
+
+    def _strip_repeated_user_prefix(self, text: str) -> str:
+        if self._matches_cached_user_turn(text):
+            logger.info("ignored repeated stt transcript text=%s", text)
+            return ""
+        previous = self._longest_cached_user_prefix(text)
+        if not previous:
+            return text
+        stripped = _trim_wake_separators(text[len(previous) :])
+        if stripped:
+            logger.info("stripped repeated stt prefix previous=%s text=%s stripped=%s", previous, text, stripped)
+            return stripped
+        return text
+
+    def _longest_cached_user_prefix(self, text: str) -> str:
+        prefixes = (
+            turn["stt_text"].strip()
+            for turn in self._user_turn_cache.values()
+            if turn.get("stt_text")
+        )
+        return max(
+            (prefix for prefix in prefixes if len(text) > len(prefix) and text.startswith(prefix)),
+            key=len,
+            default="",
+        )
+
+    def _matches_cached_user_turn(self, text: str) -> bool:
+        return any(
+            text == turn["stt_text"].strip()
+            for turn in self._user_turn_cache.values()
+            if turn.get("stt_text")
+        )
+
+    def _remember_user_turn(self, stt_text: str, submitted_text: str) -> None:
+        self._user_turn_cache[self._next_user_turn_id] = {
+            "stt_text": stt_text,
+            "submitted_text": submitted_text,
+        }
+        self._next_user_turn_id += 1
+        max_cached_turns = max(4, self.duplex.max_history_turns * 2)
+        while len(self._user_turn_cache) > max_cached_turns:
+            oldest_turn_id = next(iter(self._user_turn_cache))
+            del self._user_turn_cache[oldest_turn_id]
+
+    def _clear_user_turn_cache(self) -> None:
+        self._user_turn_cache.clear()
+        self._next_user_turn_id = 0
 
 
 def _normalize_phrase(text: str) -> str:
