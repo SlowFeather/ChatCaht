@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 
 import websockets
@@ -90,45 +91,192 @@ class ServiceSttClient(SttClient):
             return False, str(exc)
 
     async def start(self) -> None:
-        await self._command("start")
+        resp = await self._command("start")
+        logger.info("stt start command response: %s", _summarize_message(resp))
 
     async def stop(self) -> None:
-        await self._command("stop")
+        resp = await self._command("stop")
+        logger.info("stt stop command response: %s", _summarize_message(resp))
 
     async def transcripts(self) -> AsyncIterator[Transcript]:
         async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
             logger.info("stt ws connected: %s", self.cfg.url)
             if self.cfg.auto_start_listening:
                 await ws.send(json.dumps({"type": "start"}))
-                logger.debug("stt listening start command sent")
+                logger.info("stt transcript stream sent start command")
+            pending_partial: Transcript | None = None
+            pending_partial_at = 0.0
             async for raw in ws:
                 if isinstance(raw, bytes):
                     continue
                 msg = json.loads(raw)
-                if msg.get("type") != "transcript":
+                msg_type = msg.get("type")
+                if msg_type == "status":
+                    logger.info("stt stream status: %s", _summarize_message(msg))
+                    continue
+                if msg_type == "error":
+                    logger.warning("stt stream error: %s", _summarize_message(msg))
+                    continue
+                if msg_type == "ack":
+                    logger.info("stt stream ack: %s", _summarize_message(msg))
+                    continue
+                if msg_type != "transcript":
+                    logger.debug("stt stream ignored message: %s", _summarize_message(msg))
                     continue
                 is_final = bool(msg.get("is_final")) or msg.get("event") == "final"
                 kind = TranscriptKind.FINAL if is_final else TranscriptKind.PARTIAL
-                if self.cfg.final_events_only and kind != TranscriptKind.FINAL:
-                    continue
                 text = str(msg.get("text") or "").strip()
+                logger.info(
+                    "stt transcript received kind=%s text=%s source=%s segment=%s",
+                    kind.value,
+                    text,
+                    msg.get("source"),
+                    msg.get("segment_id"),
+                )
                 if text:
-                    yield Transcript(
+                    transcript = Transcript(
                         text=text,
                         kind=kind,
                         source=str(msg.get("source") or "microphone"),
                         segment_id=_optional_int(msg.get("segment_id")),
                         raw=msg,
                     )
+                    if kind == TranscriptKind.FINAL:
+                        pending_partial = None
+                        yield transcript
+                    elif self.cfg.final_events_only:
+                        if len(text) >= self.cfg.partial_min_chars and self.cfg.partial_fallback_sec > 0:
+                            pending_partial = transcript
+                            pending_partial_at = time.monotonic()
+                            async for fallback in self._wait_for_partial_fallback(ws, pending_partial, pending_partial_at):
+                                if fallback.is_final:
+                                    pending_partial = None
+                                yield fallback
+                        else:
+                            logger.info("stt partial ignored because final_events_only=true text=%s", text)
+                    else:
+                        yield transcript
+
+    async def _wait_for_partial_fallback(
+        self,
+        ws,
+        pending: Transcript,
+        pending_at: float,
+    ) -> AsyncIterator[Transcript]:
+        while True:
+            elapsed = time.monotonic() - pending_at
+            remaining = self.cfg.partial_fallback_sec - elapsed
+            if remaining <= 0:
+                logger.info("stt partial fallback promoted to final text=%s", pending.text)
+                yield Transcript(
+                    text=pending.text,
+                    kind=TranscriptKind.FINAL,
+                    source=pending.source,
+                    segment_id=pending.segment_id,
+                    raw=pending.raw,
+                )
+                return
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            except TimeoutError:
+                logger.info("stt partial fallback promoted to final text=%s", pending.text)
+                yield Transcript(
+                    text=pending.text,
+                    kind=TranscriptKind.FINAL,
+                    source=pending.source,
+                    segment_id=pending.segment_id,
+                    raw=pending.raw,
+                )
+                return
+            if isinstance(raw, bytes):
+                continue
+            msg = json.loads(raw)
+            msg_type = msg.get("type")
+            if msg_type == "status":
+                logger.info("stt stream status: %s", _summarize_message(msg))
+                continue
+            if msg_type == "error":
+                logger.warning("stt stream error: %s", _summarize_message(msg))
+                continue
+            if msg_type == "ack":
+                logger.info("stt stream ack: %s", _summarize_message(msg))
+                continue
+            if msg_type != "transcript":
+                logger.debug("stt stream ignored message: %s", _summarize_message(msg))
+                continue
+
+            is_final = bool(msg.get("is_final")) or msg.get("event") == "final"
+            kind = TranscriptKind.FINAL if is_final else TranscriptKind.PARTIAL
+            text = str(msg.get("text") or "").strip()
+            logger.info(
+                "stt transcript received kind=%s text=%s source=%s segment=%s",
+                kind.value,
+                text,
+                msg.get("source"),
+                msg.get("segment_id"),
+            )
+            if not text:
+                continue
+            transcript = Transcript(
+                text=text,
+                kind=kind,
+                source=str(msg.get("source") or "microphone"),
+                segment_id=_optional_int(msg.get("segment_id")),
+                raw=msg,
+            )
+            if kind == TranscriptKind.FINAL:
+                yield transcript
+                return
+            if len(text) < self.cfg.partial_min_chars:
+                logger.info("stt partial ignored because text is shorter than partial_min_chars text=%s", text)
+                continue
+            pending = transcript
+            pending_at = time.monotonic()
 
     async def _command(self, typ: str) -> dict | None:
         logger.debug("stt command: %s", typ)
         async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
             await ws.send(json.dumps({"type": typ}))
-            raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
-            if isinstance(raw, bytes):
-                return None
-            return json.loads(raw)
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
+                if isinstance(raw, bytes):
+                    continue
+                msg = json.loads(raw)
+                msg_type = msg.get("type")
+                if msg_type == "error":
+                    logger.warning("stt command %s error response: %s", typ, _summarize_message(msg))
+                    return msg
+                if typ == "status" and msg_type == "status":
+                    logger.info("stt command %s status response: %s", typ, _summarize_message(msg))
+                    return msg
+                if msg_type == "ack" and msg.get("cmd") == typ:
+                    logger.info("stt command %s ack response: %s", typ, _summarize_message(msg))
+                    return msg
+                if typ == "ping" and msg_type == "pong":
+                    logger.info("stt command %s pong response: %s", typ, _summarize_message(msg))
+                    return msg
+
+
+def _summarize_message(msg: dict | None) -> dict | None:
+    if msg is None:
+        return None
+    keys = (
+        "type",
+        "cmd",
+        "ok",
+        "ready",
+        "listening",
+        "worker_state",
+        "last_error",
+        "audio_restart_count",
+        "last_text",
+        "event",
+        "is_final",
+        "text",
+        "source",
+        "segment_id",
+    )
+    return {key: msg.get(key) for key in keys if key in msg}
 
 
 def _optional_int(value) -> int | None:

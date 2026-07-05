@@ -82,13 +82,23 @@ class VoiceSession:
                         break
                     with contextlib.suppress(Exception):
                         await self.wake.stop()
-                    await self._speak_wake_ack()
                     await self._start_stt_with_retry()
                 else:
                     await self._start_stt_with_retry()
 
                 self.stats.conversations += 1
+                logger.info(
+                    "conversation #%d started; waiting for stt transcripts (final_events_only may filter partials)",
+                    self.stats.conversations,
+                )
+                ack_task = None
+                if self.duplex.start_mode == "wake":
+                    ack_task = asyncio.create_task(self._speak_wake_ack())
                 reason = await self._conversation()
+                if ack_task is not None:
+                    ack_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await ack_task
                 logger.info("conversation #%d ended: %s", self.stats.conversations, reason)
                 await self.wait_for_idle()
 
@@ -256,6 +266,7 @@ class VoiceSession:
                 return
 
         if transcript.is_final:
+            print(f"\nUser: {text}", flush=True)
             self.stats.user_turns += 1
             self._current_response = asyncio.create_task(self._respond(text))
             self._current_response.add_done_callback(self._on_response_done)
@@ -317,6 +328,7 @@ class VoiceSession:
                 self._append_history("assistant", assistant_text)
                 self.stats.assistant_turns += 1
                 logger.info("assistant response complete chars=%d", len(assistant_text))
+                print(f"\nAssistant: {assistant_text}", flush=True)
 
     async def _stream_llm(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         """LLM 流式输出；若尚未产出任何 token 即失败，则重试一次。"""

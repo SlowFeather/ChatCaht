@@ -44,6 +44,8 @@ class SttConfig:
     url: str = "ws://127.0.0.1:8790/v1/stt/ws"
     auto_start_listening: bool = True
     final_events_only: bool = True
+    partial_fallback_sec: float = 0.5
+    partial_min_chars: int = 2
 
 
 @dataclass(slots=True)
@@ -193,6 +195,10 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("openai.max_tokens must be positive")
     if cfg.runtime.health_timeout_sec <= 0:
         raise ValueError("runtime.health_timeout_sec must be positive")
+    if cfg.stt.partial_fallback_sec < 0:
+        raise ValueError("stt.partial_fallback_sec must be >= 0 (0 disables partial fallback)")
+    if cfg.stt.partial_min_chars < 1:
+        raise ValueError("stt.partial_min_chars must be positive")
     if cfg.services.startup_timeout_sec <= 0:
         raise ValueError("services.startup_timeout_sec must be positive")
     if cfg.duplex.idle_timeout_sec < 0:
