@@ -154,6 +154,7 @@ class VoiceSession:
         text = (self.duplex.wake_ack_text or "").strip()
         if not text:
             return
+        logger.info("speaking wake acknowledgement: %s", text)
         try:
             async for chunk in self.tts.synthesize(text):
                 await self.audio.play(chunk.pcm, sample_rate=chunk.sample_rate, channels=chunk.channels)
@@ -379,6 +380,7 @@ class VoiceSession:
         while not self._stop.is_set():
             try:
                 await self.stt.start()
+                logger.info("stt listening started; conversation active")
                 return
             except Exception:
                 logger.exception("failed to start stt; retrying in %.1fs", delay)

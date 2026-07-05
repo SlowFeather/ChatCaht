@@ -10,6 +10,10 @@ openai:
   temperature: 0.6
   max_tokens: 512
   timeout_sec: 60
+  # 附加请求字段，原样并入 /chat/completions 请求体（按需增删）。
+  # 思考型模型（如 qwen3.5）需要关掉思考，否则 content 为空且首字延迟极高。
+  extra_body:
+    reasoning_effort: none
 
 wake:
   enabled: true

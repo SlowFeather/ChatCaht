@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 
 import websockets
 
 from chatcaht.config import SttConfig
 from chatcaht.models import Transcript, TranscriptKind
+
+logger = logging.getLogger(__name__)
 
 
 class SttClient:
@@ -94,8 +97,10 @@ class ServiceSttClient(SttClient):
 
     async def transcripts(self) -> AsyncIterator[Transcript]:
         async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
+            logger.info("stt ws connected: %s", self.cfg.url)
             if self.cfg.auto_start_listening:
                 await ws.send(json.dumps({"type": "start"}))
+                logger.debug("stt listening start command sent")
             async for raw in ws:
                 if isinstance(raw, bytes):
                     continue
@@ -117,6 +122,7 @@ class ServiceSttClient(SttClient):
                     )
 
     async def _command(self, typ: str) -> dict | None:
+        logger.debug("stt command: %s", typ)
         async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
             await ws.send(json.dumps({"type": typ}))
             raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)

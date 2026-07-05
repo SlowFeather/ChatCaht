@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 
 import websockets
 
 from chatcaht.config import WakeConfig
 from chatcaht.models import WakeEvent
+
+logger = logging.getLogger(__name__)
 
 
 class WakeClient:
@@ -90,8 +93,10 @@ class ServiceWakeClient(WakeClient):
     async def events(self) -> AsyncIterator[WakeEvent]:
         async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
             await ws.recv()
+            logger.info("wake ws connected: %s", self.cfg.url)
             if self.cfg.auto_start_listening:
                 await ws.send(json.dumps({"type": "start"}))
+                logger.debug("wake listening start command sent")
             while True:
                 raw = await ws.recv()
                 if isinstance(raw, bytes):
@@ -105,6 +110,7 @@ class ServiceWakeClient(WakeClient):
                     )
 
     async def _command(self, cmd: str) -> dict | None:
+        logger.debug("wake command: %s", cmd)
         async with websockets.connect(self.cfg.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=self.timeout, max_size=None) as ws:
             await ws.recv()
             await ws.send(json.dumps({"type": cmd}))

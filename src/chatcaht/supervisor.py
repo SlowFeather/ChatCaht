@@ -35,6 +35,11 @@ class Supervisor:
 
     async def run(self) -> int:
         sup = self.cfg.supervisor
+        logger.info(
+            "supervisor starting: manage_services=%s health_check_interval=%.0fs",
+            self.manager is not None,
+            sup.health_check_interval_sec,
+        )
         if self.manager is not None:
             await self._ensure_services()
 

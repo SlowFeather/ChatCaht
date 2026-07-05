@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -15,6 +16,8 @@ from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
 from .config import Config
+
+logger = logging.getLogger(__name__)
 
 ServiceName = Literal["wake", "stt", "tts"]
 
@@ -101,6 +104,7 @@ class ServiceManager:
             service = self._services[name]
             status = await self.status_one(name)
             if status.running:
+                logger.info("service %s already running pid=%s", name, status.pid)
                 continue
             self._start_process(service)
         if wait:
@@ -108,8 +112,14 @@ class ServiceManager:
             while time.monotonic() < deadline:
                 statuses = await self.status(names)
                 if all(s.ok for s in statuses):
+                    logger.info("all requested services healthy: %s", ", ".join(names))
                     return statuses
                 await asyncio.sleep(0.5)
+            logger.warning(
+                "services not all healthy within %.0fs: %s",
+                self.cfg.services.startup_timeout_sec,
+                ", ".join(f"{s.name}={s.detail}" for s in await self.status(names) if not s.ok),
+            )
         return await self.status(names)
 
     async def stop(self, names: list[ServiceName] | None = None) -> list[ServiceStatus]:
@@ -127,7 +137,10 @@ class ServiceManager:
             service = self._services[name]
             pid = _read_pid(service.pid_file)
             if pid and _is_pid_running(pid):
+                logger.info("terminating service %s pid=%d", name, pid)
                 _terminate_pid(pid)
+            else:
+                logger.info("service %s already stopped", name)
             _remove_pid_file(service.pid_file)
         return await self.status(names)
 
@@ -153,6 +166,13 @@ class ServiceManager:
     def _start_process(self, service: ManagedService) -> None:
         if not service.cwd.exists():
             raise FileNotFoundError(f"{service.name} project directory not found: {service.cwd}")
+        logger.info(
+            "starting service %s: %s (cwd=%s, log=%s)",
+            service.name,
+            " ".join(service.command),
+            service.cwd,
+            service.log_file,
+        )
         service.log_file.parent.mkdir(parents=True, exist_ok=True)
         log = service.log_file.open("ab")
         creationflags = 0
@@ -173,6 +193,7 @@ class ServiceManager:
             )
         finally:
             log.close()
+        logger.info("service %s started pid=%d", service.name, proc.pid)
         _write_pid(service.pid_file, proc.pid, service.command, service.cwd)
 
 

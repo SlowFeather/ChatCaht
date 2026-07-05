@@ -22,6 +22,10 @@ class OpenAIConfig:
     temperature: float = 0.6
     max_tokens: int = 512
     timeout_sec: float = 60.0
+    # 附加请求字段，原样并入 /chat/completions 请求体。
+    # 思考型模型（如 Ollama 的 qwen3.5）默认把输出耗在 reasoning 上导致
+    # content 为空，语音场景需要 {"reasoning_effort": "none"} 直接出正文。
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

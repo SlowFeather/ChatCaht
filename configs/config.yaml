@@ -10,6 +10,10 @@ openai:
   temperature: 0.6
   max_tokens: 512
   timeout_sec: 60
+  # qwen3.5 是思考型模型：不关思考的话 content 一直为空、首字延迟 30s+，
+  # 语音场景必须直接出正文
+  extra_body:
+    reasoning_effort: none
 
 wake:
   enabled: true

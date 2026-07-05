@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -75,7 +76,11 @@ async def _amain(args: argparse.Namespace) -> int:
 
     cfg = load_config(args.config)
     cfg.ensure_dirs()
-    setup_logging(cfg.runtime.log_level, str(Path(cfg.paths.logs_dir) / "chatcaht.log"))
+    log_file = Path(cfg.paths.logs_dir) / "chatcaht.log"
+    setup_logging(cfg.runtime.log_level, str(log_file))
+    logging.getLogger("chatcaht.cli").info(
+        "chatcaht %s starting; config=%s log=%s", args.command, args.config, log_file
+    )
 
     if args.command == "doctor":
         return await _doctor(cfg)
