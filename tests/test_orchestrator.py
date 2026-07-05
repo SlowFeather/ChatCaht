@@ -242,6 +242,28 @@ async def test_end_session_words_accept_configured_standalone_phrases(phrase: st
 
 
 @pytest.mark.asyncio
+async def test_end_session_word_does_not_enter_user_turn_cache() -> None:
+    cfg = Config()
+    cfg.duplex.end_session_words = ["关闭"]
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript("关闭", TranscriptKind.FINAL))
+
+    assert session._session_end.is_set()
+    assert session._user_turn_cache == {}
+    assert model.calls == 0
+    assert session.stats.user_turns == 0
+
+
+@pytest.mark.asyncio
 async def test_repeated_user_prefix_is_removed_from_stt_carryover() -> None:
     cfg = Config()
     model = CapturingModel()
@@ -261,6 +283,34 @@ async def test_repeated_user_prefix_is_removed_from_stt_carryover() -> None:
 
     assert model.calls == 2
     assert model.last_user_message == "water or cola"
+    assert session._user_turn_cache[1]["stt_text"] == "water or cola"
+    assert session._user_turn_cache[1]["raw_stt_text"] == "tomato or potatowater or cola"
+
+
+@pytest.mark.asyncio
+async def test_end_session_word_is_discarded_from_stt_carryover() -> None:
+    cfg = Config()
+    cfg.duplex.end_session_words = ["关闭"]
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+        wake_trigger_words=["小源"],
+    )
+
+    await session.handle_transcript(Transcript("你觉得这个夏天吃什么好", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+    await session.handle_transcript(Transcript("你觉得这个夏天吃什么好关闭小源你觉得九九感冒灵好不好", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert model.calls == 2
+    assert model.last_user_message == "你觉得九九感冒灵好不好"
+    assert session._user_turn_cache[1]["stt_text"] == "你觉得九九感冒灵好不好"
+    assert session._user_turn_cache[1]["raw_stt_text"] == "你觉得这个夏天吃什么好关闭小源你觉得九九感冒灵好不好"
 
 
 @pytest.mark.asyncio

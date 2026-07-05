@@ -259,6 +259,18 @@ class VoiceSession:
         if not text:
             logger.info("stt transcript ignored after turn splitting")
             return
+        stripped_repeated_prefix = text != stt_text
+        if transcript.is_final and self._is_end_session(text):
+            logger.info("end session phrase detected")
+            self._session_end.set()
+            return
+        if stripped_repeated_prefix:
+            stripped_text = self._strip_leading_end_session_word(text)
+            if stripped_text != text:
+                text = self._strip_active_wake_trigger(stripped_text)
+                if not text:
+                    logger.info("stt transcript ignored after end session word stripping")
+                    return
         logger.info("user transcript kind=%s text=%s", transcript.kind.value, text)
         self._touch_activity()
 
@@ -270,11 +282,6 @@ class VoiceSession:
                     await self._cancel_response()
                 else:
                     logger.info("assistant is speaking; ignoring partial transcript while barge-in disabled")
-            return
-
-        if self._is_end_session(text):
-            logger.info("end session phrase detected")
-            self._session_end.set()
             return
 
         if self._current_response and not self._current_response.done():
@@ -289,7 +296,7 @@ class VoiceSession:
         if transcript.is_final:
             print(f"\nUser: {text}", flush=True)
             self.stats.user_turns += 1
-            self._remember_user_turn(stt_text, text)
+            self._remember_user_turn(raw_stt_text=stt_text, submitted_text=text)
             self._current_response = asyncio.create_task(self._respond(text))
             self._current_response.add_done_callback(self._on_response_done)
 
@@ -433,6 +440,15 @@ class VoiceSession:
         normalized = _normalize_phrase(text)
         return any(word and normalized == _normalize_phrase(word) for word in self.duplex.end_session_words)
 
+    def _strip_leading_end_session_word(self, text: str) -> str:
+        for word in sorted(self.duplex.end_session_words, key=len, reverse=True):
+            word = word.strip()
+            if word and text.startswith(word):
+                stripped = _trim_wake_separators(text[len(word) :])
+                logger.info("stripped leading end session word word=%s text=%s stripped=%s", word, text, stripped)
+                return stripped
+        return text
+
     def _strip_active_wake_trigger(self, text: str) -> str:
         for word in sorted(self.wake_trigger_words, key=len, reverse=True):
             if _normalize_phrase(text) == _normalize_phrase(word):
@@ -458,7 +474,7 @@ class VoiceSession:
 
     def _longest_cached_user_prefix(self, text: str) -> str:
         prefixes = (
-            turn["stt_text"].strip()
+            turn.get("raw_stt_text", turn["stt_text"]).strip()
             for turn in self._user_turn_cache.values()
             if turn.get("stt_text")
         )
@@ -469,15 +485,17 @@ class VoiceSession:
         )
 
     def _matches_cached_user_turn(self, text: str) -> bool:
-        return any(
-            text == turn["stt_text"].strip()
-            for turn in self._user_turn_cache.values()
-            if turn.get("stt_text")
-        )
+        for turn in self._user_turn_cache.values():
+            stt_text = turn.get("stt_text", "").strip()
+            raw_stt_text = turn.get("raw_stt_text", stt_text).strip()
+            if text in {stt_text, raw_stt_text}:
+                return True
+        return False
 
-    def _remember_user_turn(self, stt_text: str, submitted_text: str) -> None:
+    def _remember_user_turn(self, raw_stt_text: str, submitted_text: str) -> None:
         self._user_turn_cache[self._next_user_turn_id] = {
-            "stt_text": stt_text,
+            "raw_stt_text": raw_stt_text,
+            "stt_text": submitted_text,
             "submitted_text": submitted_text,
         }
         self._next_user_turn_id += 1
