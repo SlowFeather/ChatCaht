@@ -89,7 +89,7 @@ uv run chatcaht init-config --out configs/config.yaml
 uv run chatcaht run
 ```
 
-- 说唤醒词（如"小元"）开始对话，说"退出/再见"或静默超时后回到待命，可反复唤醒
+- 说唤醒词（如"小元"）开始对话，单独说"退出/再见/拜拜/闭嘴"或静默超时后回到待命，可反复唤醒
 - 加 `--no-services` 表示底层服务由你自己管理，ChatCaht 只做编排
 - 按 Ctrl+C 停止
 

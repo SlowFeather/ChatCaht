@@ -44,7 +44,7 @@ duplex:
   start_mode: wake
   allow_barge_in: true
   cancel_tts_on_user_speech: true
-  end_session_words: ["退出", "停止聊天", "再见"]
+  end_session_words: ["退出", "停止聊天", "再见", "拜拜", "闭嘴", "别说了", "不聊了", "不想聊了", "不想说了", "不想听了", "停止", "关闭", "结束", "结束会话", "结束对话", "结束聊天"]
   system_prompt: >
     你是一个运行在本地电脑上的中文实时语音助手。
     回答要自然、简洁、适合直接朗读。需要写代码时保持清晰严谨。

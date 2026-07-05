@@ -64,7 +64,7 @@ class DuplexConfig:
     start_mode: str = "wake"
     allow_barge_in: bool = True
     cancel_tts_on_user_speech: bool = True
-    end_session_words: list[str] = field(default_factory=lambda: ["退出", "停止聊天", "再见"])
+    end_session_words: list[str] = field(default_factory=lambda: ["退出", "停止聊天", "再见", "拜拜", "闭嘴"])
     system_prompt: str = (
         "你是一个运行在本地电脑上的中文实时语音助手。"
         "回答要自然、简洁、适合直接朗读。需要写代码时保持清晰严谨。"

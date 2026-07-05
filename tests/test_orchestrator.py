@@ -194,6 +194,54 @@ async def test_wake_trigger_prefix_is_removed_during_active_conversation() -> No
 
 
 @pytest.mark.asyncio
+async def test_end_session_words_require_standalone_phrase() -> None:
+    cfg = Config()
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript("不要跟我说再见", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert not session._session_end.is_set()
+    assert model.calls == 1
+    assert session.stats.user_turns == 1
+
+    await session.handle_transcript(Transcript("再见", TranscriptKind.FINAL))
+
+    assert session._session_end.is_set()
+    assert model.calls == 1
+    assert session.stats.user_turns == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phrase", ["再见", "再见。", "拜拜", "闭嘴"])
+async def test_end_session_words_accept_configured_standalone_phrases(phrase: str) -> None:
+    cfg = Config()
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript(phrase, TranscriptKind.FINAL))
+
+    assert session._session_end.is_set()
+    assert model.calls == 0
+    assert session.stats.user_turns == 0
+
+
+@pytest.mark.asyncio
 async def test_repeated_user_prefix_is_removed_from_stt_carryover() -> None:
     cfg = Config()
     model = CapturingModel()

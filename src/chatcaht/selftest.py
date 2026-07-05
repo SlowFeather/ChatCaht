@@ -46,7 +46,7 @@ async def run_selftest(cfg: Config) -> list[tuple[str, bool, str]]:
     loop_session = VoiceSession(
         duplex=cfg.duplex,
         wake=MockWakeClient(),
-        stt=MockSttClient(["第一轮问题", "第二轮问题"], turn_delay=0.02),
+        stt=MockSttClient(["第一轮问题", "第二轮问题"], turn_delay=0.1),
         tts=MockTtsClient(),
         llm=loop_model,
         audio=loop_audio,

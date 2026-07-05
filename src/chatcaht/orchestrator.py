@@ -430,8 +430,8 @@ class VoiceSession:
             self._history = [self._history[0], *self._history[-keep_messages:]]
 
     def _is_end_session(self, text: str) -> bool:
-        normalized = text.replace("，", "").replace("。", "").strip()
-        return any(word and word in normalized for word in self.duplex.end_session_words)
+        normalized = _normalize_phrase(text)
+        return any(word and normalized == _normalize_phrase(word) for word in self.duplex.end_session_words)
 
     def _strip_active_wake_trigger(self, text: str) -> str:
         for word in sorted(self.wake_trigger_words, key=len, reverse=True):
