@@ -95,9 +95,12 @@ class LollamaChatClient:
                             yield chunk
                     elif msg_type == "agent_status":
                         logger.info(
-                            "lollama status stage=%s announce=%s",
+                            "lollama status stage=%s name=%s announce=%s result=%s count=%s",
                             msg.get("stage"),
+                            msg.get("name"),
                             str(msg.get("announce") or "")[:80],
+                            str(msg.get("result") or "")[:120],
+                            msg.get("count"),
                         )
                         if on_status is not None and self.cfg.announce_status:
                             try:
