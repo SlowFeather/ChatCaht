@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import logging
 
 import pytest
 import websockets
@@ -248,3 +249,57 @@ async def test_service_stt_uses_real_final_before_partial_fallback() -> None:
     finally:
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_service_stt_info_logs_do_not_include_raw_transcript_text(caplog) -> None:
+    accumulated_text = "first questionsecond question"
+
+    async def handler(ws):
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "status",
+                    "ready": True,
+                    "listening": True,
+                    "last_text": accumulated_text,
+                },
+                ensure_ascii=False,
+            )
+        )
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "start":
+                await ws.send(json.dumps({"type": "ack", "cmd": "start", "ok": True}))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "transcript",
+                            "event": "final",
+                            "is_final": True,
+                            "text": accumulated_text,
+                            "source": "microphone",
+                            "segment_id": 3,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    cfg = SttConfig(url=f"ws://127.0.0.1:{port}/v1/stt/ws")
+    client = ServiceSttClient(cfg, timeout=2.0)
+    try:
+        caplog.set_level(logging.INFO, logger="chatcaht.adapters.stt")
+        stream = client.transcripts()
+        transcript = await asyncio.wait_for(anext(stream), timeout=1.0)
+        assert transcript.text == accumulated_text
+        await stream.aclose()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    info_logs = "\n".join(record.getMessage() for record in caplog.records if record.levelno == logging.INFO)
+    assert accumulated_text not in info_logs
+    assert "last_text" not in info_logs
+    assert f"chars={len(accumulated_text)}" in info_logs

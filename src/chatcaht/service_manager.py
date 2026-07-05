@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .adapters.llm import LollamaChatClient
 from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
@@ -19,7 +20,7 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
-ServiceName = Literal["wake", "stt", "tts"]
+ServiceName = Literal["wake", "stt", "tts", "llm"]
 
 
 @dataclass(slots=True)
@@ -95,11 +96,32 @@ class ServiceManager:
                     pid_file=run_dir / "gvoice.pid.json",
                     log_file=log_dir / "gvoice.service.log",
                 ),
+                ManagedService(
+                    name="llm",
+                    cwd=_resolve(cfg.services.lollama_dir),
+                    command=[
+                        cfg.services.uv_executable,
+                        "run",
+                        "lollama",
+                        "--config",
+                        cfg.services.lollama_config,
+                        "serve",
+                    ],
+                    pid_file=run_dir / "lollama.pid.json",
+                    log_file=log_dir / "lollama.service.log",
+                ),
             )
         }
 
+    def default_names(self) -> list[ServiceName]:
+        """默认托管的服务集合：llm 只在 provider=lollama 时纳入。"""
+        names: list[ServiceName] = ["wake", "stt", "tts"]
+        if self.cfg.llm.provider == "lollama":
+            names.append("llm")
+        return names
+
     async def start(self, names: list[ServiceName] | None = None, *, wait: bool = True) -> list[ServiceStatus]:
-        names = names or ["wake", "stt", "tts"]
+        names = names or self.default_names()
         for name in names:
             service = self._services[name]
             status = await self.status_one(name)
@@ -123,13 +145,15 @@ class ServiceManager:
         return await self.status(names)
 
     async def stop(self, names: list[ServiceName] | None = None) -> list[ServiceStatus]:
-        names = names or ["wake", "stt", "tts"]
+        names = names or self.default_names()
         for name in names:
             if name == "wake":
                 await _ignore_errors(create_wake_client(self.cfg.wake, timeout=2.0).stop())
                 await _ignore_errors(_shutdown_wake(self.cfg))
             elif name == "stt":
                 await _ignore_errors(_shutdown_stt(self.cfg))
+            elif name == "llm":
+                await _ignore_errors(_shutdown_llm(self.cfg))
             elif name == "tts":
                 pass
         await asyncio.sleep(0.5)
@@ -145,7 +169,7 @@ class ServiceManager:
         return await self.status(names)
 
     async def status(self, names: list[ServiceName] | None = None) -> list[ServiceStatus]:
-        names = names or ["wake", "stt", "tts"]
+        names = names or self.default_names()
         return [await self.status_one(name) for name in names]
 
     async def status_one(self, name: ServiceName) -> ServiceStatus:
@@ -161,6 +185,8 @@ class ServiceManager:
             return await create_wake_client(self.cfg.wake, timeout=timeout).health()
         if name == "stt":
             return await create_stt_client(self.cfg.stt, timeout=timeout).health()
+        if name == "llm":
+            return await LollamaChatClient(self.cfg.lollama, timeout=timeout).health()
         return await create_tts_client(self.cfg.tts, timeout=timeout).health()
 
     def _start_process(self, service: ManagedService) -> None:
@@ -210,6 +236,14 @@ async def _shutdown_stt(cfg: Config) -> None:
     import websockets
 
     async with websockets.connect(cfg.stt.url, open_timeout=2.0, max_size=None) as ws:
+        await ws.send(json.dumps({"type": "shutdown"}))
+        await asyncio.wait_for(ws.recv(), timeout=2.0)
+
+
+async def _shutdown_llm(cfg: Config) -> None:
+    import websockets
+
+    async with websockets.connect(cfg.lollama.url, open_timeout=2.0, max_size=None) as ws:
         await ws.send(json.dumps({"type": "shutdown"}))
         await asyncio.wait_for(ws.recv(), timeout=2.0)
 

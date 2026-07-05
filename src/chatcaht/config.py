@@ -29,6 +29,24 @@ class OpenAIConfig:
 
 
 @dataclass(slots=True)
+class LlmConfig:
+    # 回复由谁生成：
+    #   openai  —— 直连 OpenAI 兼容 API（LM Studio），走 openai: 段
+    #   lollama —— 经 LoLLama 智能体服务（分层记忆 + 工具调用），走 lollama: 段
+    provider: str = "openai"
+
+
+@dataclass(slots=True)
+class LollamaConfig:
+    url: str = "ws://127.0.0.1:8801/v1/llm/ws"
+    # 单条回复的整体超时（秒）；工具调用可能较慢，默认放宽
+    response_timeout_sec: float = 180.0
+    # 把 LoLLama 的 agent_status 状态播报（"我算一下""让我想想"等）送 TTS 朗读；
+    # 播报文案在 LoLLama 侧 config 的 status.announce 段配置
+    announce_status: bool = True
+
+
+@dataclass(slots=True)
 class WakeConfig:
     enabled: bool = True
     mode: str = "service"
@@ -112,6 +130,8 @@ class ServicesConfig:
     sptext_config: str = "configs/config.example.yaml"
     gvoice_dir: str = "../GVoice"
     gvoice_config: str = "configs/config.yaml"
+    lollama_dir: str = "../LoLLama"
+    lollama_config: str = "configs/config.yaml"
     startup_timeout_sec: float = 20.0
 
 
@@ -119,6 +139,8 @@ class ServicesConfig:
 class Config:
     paths: PathsConfig = field(default_factory=PathsConfig)
     openai: OpenAIConfig = field(default_factory=OpenAIConfig)
+    llm: LlmConfig = field(default_factory=LlmConfig)
+    lollama: LollamaConfig = field(default_factory=LollamaConfig)
     wake: WakeConfig = field(default_factory=WakeConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
@@ -189,6 +211,12 @@ def validate_config(cfg: Config) -> None:
             raise ValueError(f"{mode_name} must be one of: service, mock, disabled")
     if not cfg.wake.url.startswith(("ws://", "wss://")):
         raise ValueError("wake.url must start with ws:// or wss://")
+    if cfg.llm.provider not in {"openai", "lollama"}:
+        raise ValueError("llm.provider must be one of: openai, lollama")
+    if not cfg.lollama.url.startswith(("ws://", "wss://")):
+        raise ValueError("lollama.url must start with ws:// or wss://")
+    if cfg.lollama.response_timeout_sec <= 0:
+        raise ValueError("lollama.response_timeout_sec must be positive")
     if cfg.duplex.max_history_turns < 1:
         raise ValueError("duplex.max_history_turns must be positive")
     if cfg.openai.max_tokens < 1:

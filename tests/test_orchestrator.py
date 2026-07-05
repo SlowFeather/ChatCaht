@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -288,6 +289,33 @@ async def test_repeated_user_prefix_is_removed_from_stt_carryover() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stripped_stt_prefix_info_log_only_shows_current_turn(caplog) -> None:
+    cfg = Config()
+    model = CapturingModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    caplog.set_level(logging.INFO, logger="chatcaht.orchestrator")
+    await session.handle_transcript(Transcript("tomato or potato", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+    caplog.clear()
+    await session.handle_transcript(Transcript("tomato or potatowater or cola", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    info_logs = "\n".join(record.getMessage() for record in caplog.records if record.levelno == logging.INFO)
+    assert "tomato or potato" not in info_logs
+    assert "tomato or potatowater or cola" not in info_logs
+    assert "stripped=water or cola" in info_logs
+    assert "user transcript kind=final text=water or cola" in info_logs
+
+
+@pytest.mark.asyncio
 async def test_end_session_word_is_discarded_from_stt_carryover() -> None:
     cfg = Config()
     cfg.duplex.end_session_words = ["关闭"]
@@ -340,6 +368,34 @@ async def test_accumulated_stt_finals_are_split_by_cached_turns() -> None:
     ]
     assert model.calls == 3
     assert user_messages == ["cola or sprite", "watermelon", "or cucumber"]
+
+
+@pytest.mark.asyncio
+async def test_backend_managed_history_receives_only_current_turn() -> None:
+    cfg = Config()
+    model = BackendHistoryModel()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript("第一句", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+    await session.handle_transcript(Transcript("第二句", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    user_messages = [
+        message["content"]
+        for message in model.last_messages
+        if message["role"] == "user"
+    ]
+    assert user_messages == ["第二句"]
+    assert model.last_messages == [{"role": "user", "content": "第二句"}]
+    assert all("backend ok" not in message["content"] for message in session._history)
 
 
 @pytest.mark.asyncio
@@ -405,3 +461,14 @@ class CapturingModel(ChatModel):
         user_messages = [message["content"] for message in messages if message["role"] == "user"]
         self.last_user_message = user_messages[-1]
         yield "ok."
+
+
+class BackendHistoryModel(CapturingModel):
+    manages_conversation_history = True
+
+    async def stream_chat(self, messages: list[dict[str, str]]):
+        self.calls += 1
+        self.last_messages = messages
+        user_messages = [message["content"] for message in messages if message["role"] == "user"]
+        self.last_user_message = user_messages[-1]
+        yield "backend ok."

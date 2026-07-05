@@ -5,12 +5,12 @@ import contextlib
 import logging
 import time
 
+from .adapters.llm import create_llm_client
 from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
 from .audio import AudioSink
 from .config import Config
-from .openai_client import OpenAICompatibleClient
 from .orchestrator import VoiceSession
 from .service_manager import ServiceManager
 
@@ -81,7 +81,7 @@ class Supervisor:
         wake = create_wake_client(cfg.wake, timeout=cfg.runtime.health_timeout_sec)
         stt = create_stt_client(cfg.stt, mock_inputs=cfg.runtime.mock_text_inputs, timeout=cfg.runtime.health_timeout_sec)
         tts = create_tts_client(cfg.tts, timeout=cfg.runtime.health_timeout_sec)
-        llm = OpenAICompatibleClient(cfg.openai)
+        llm = create_llm_client(cfg)
         audio: AudioSink = self.audio_factory()
         session = VoiceSession(
             duplex=cfg.duplex,

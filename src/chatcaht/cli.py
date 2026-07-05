@@ -7,6 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .adapters.llm import create_llm_client
 from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
@@ -14,7 +15,6 @@ from .audio import NullAudioSink, SoundDeviceSink, WaveFileSink
 from .config import Config, load_config
 from .health import run_health_checks
 from .logging import setup_logging
-from .openai_client import OpenAICompatibleClient
 from .orchestrator import VoiceSession
 from .service_manager import ServiceManager
 from .selftest import run_selftest
@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     services = sub.add_parser("services", help="Start, stop, or inspect WakeUp/SpText/GVoice services")
     services.add_argument("action", choices=["start", "stop", "status"])
-    services.add_argument("--only", nargs="+", choices=["wake", "stt", "tts"], help="Limit action to selected services")
+    services.add_argument("--only", nargs="+", choices=["wake", "stt", "tts", "llm"], help="Limit action to selected services")
     services.add_argument("--no-wait", action="store_true", help="Do not wait for health checks after start")
 
     chat = sub.add_parser("chat", help="Run realtime voice chat")
@@ -168,7 +168,7 @@ async def _chat(cfg: Config, args: argparse.Namespace) -> int:
     wake = create_wake_client(cfg.wake, timeout=cfg.runtime.health_timeout_sec)
     stt = create_stt_client(cfg.stt, mock_inputs=cfg.runtime.mock_text_inputs, timeout=cfg.runtime.health_timeout_sec)
     tts = create_tts_client(cfg.tts, timeout=cfg.runtime.health_timeout_sec)
-    lm = OpenAICompatibleClient(cfg.openai)
+    lm = create_llm_client(cfg)
     audio = _create_audio_sink(cfg, args)
     session = VoiceSession(
         duplex=cfg.duplex,
@@ -227,13 +227,20 @@ def _create_audio_sink(cfg: Config, args: argparse.Namespace):
 
 
 async def _text(cfg: Config, prompt: str) -> int:
-    lm = OpenAICompatibleClient(cfg.openai)
+    lm = create_llm_client(cfg)
     messages = [
         {"role": "system", "content": cfg.duplex.system_prompt},
         {"role": "user", "content": prompt},
     ]
+
+    async def print_status(event: dict) -> None:
+        announce = str(event.get("announce") or "").strip()
+        if announce:
+            print(f"\n[状态] {announce}", flush=True)
+
+    kwargs = {"on_status": print_status} if getattr(lm, "supports_status_events", False) else {}
     try:
-        async for chunk in lm.stream_chat(messages):
+        async for chunk in lm.stream_chat(messages, **kwargs):
             print(chunk, end="", flush=True)
         print()
     finally:

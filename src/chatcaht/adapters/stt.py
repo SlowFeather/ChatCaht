@@ -113,6 +113,7 @@ class ServiceSttClient(SttClient):
                 msg_type = msg.get("type")
                 if msg_type == "status":
                     logger.info("stt stream status: %s", _summarize_message(msg))
+                    logger.debug("stt stream status text fields: %s", _summarize_message(msg, include_text=True))
                     continue
                 if msg_type == "error":
                     logger.warning("stt stream error: %s", _summarize_message(msg))
@@ -127,12 +128,13 @@ class ServiceSttClient(SttClient):
                 kind = TranscriptKind.FINAL if is_final else TranscriptKind.PARTIAL
                 text = str(msg.get("text") or "").strip()
                 logger.info(
-                    "stt transcript received kind=%s text=%s source=%s segment=%s",
+                    "stt transcript received kind=%s source=%s segment=%s chars=%d",
                     kind.value,
-                    text,
                     msg.get("source"),
                     msg.get("segment_id"),
+                    len(text),
                 )
+                logger.debug("stt transcript raw text=%s", text)
                 if text:
                     transcript = Transcript(
                         text=text,
@@ -156,7 +158,7 @@ class ServiceSttClient(SttClient):
                                     pending_partial = None
                                 yield fallback
                         else:
-                            logger.info("stt partial ignored because final_events_only=true text=%s", text)
+                            logger.debug("stt partial ignored because final_events_only=true text=%s", text)
                     else:
                         yield transcript
 
@@ -170,7 +172,13 @@ class ServiceSttClient(SttClient):
             elapsed = time.monotonic() - pending_at
             remaining = self.cfg.partial_fallback_sec - elapsed
             if remaining <= 0:
-                logger.info("stt partial fallback promoted to final text=%s", pending.text)
+                logger.info(
+                    "stt partial fallback promoted to final source=%s segment=%s chars=%d",
+                    pending.source,
+                    pending.segment_id,
+                    len(pending.text),
+                )
+                logger.debug("stt partial fallback promoted raw text=%s", pending.text)
                 self._schedule_reset_after_partial_fallback()
                 yield Transcript(
                     text=pending.text,
@@ -183,7 +191,13 @@ class ServiceSttClient(SttClient):
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
             except TimeoutError:
-                logger.info("stt partial fallback promoted to final text=%s", pending.text)
+                logger.info(
+                    "stt partial fallback promoted to final source=%s segment=%s chars=%d",
+                    pending.source,
+                    pending.segment_id,
+                    len(pending.text),
+                )
+                logger.debug("stt partial fallback promoted raw text=%s", pending.text)
                 self._schedule_reset_after_partial_fallback()
                 yield Transcript(
                     text=pending.text,
@@ -199,6 +213,7 @@ class ServiceSttClient(SttClient):
             msg_type = msg.get("type")
             if msg_type == "status":
                 logger.info("stt stream status: %s", _summarize_message(msg))
+                logger.debug("stt stream status text fields: %s", _summarize_message(msg, include_text=True))
                 continue
             if msg_type == "error":
                 logger.warning("stt stream error: %s", _summarize_message(msg))
@@ -214,12 +229,13 @@ class ServiceSttClient(SttClient):
             kind = TranscriptKind.FINAL if is_final else TranscriptKind.PARTIAL
             text = str(msg.get("text") or "").strip()
             logger.info(
-                "stt transcript received kind=%s text=%s source=%s segment=%s",
+                "stt transcript received kind=%s source=%s segment=%s chars=%d",
                 kind.value,
-                text,
                 msg.get("source"),
                 msg.get("segment_id"),
+                len(text),
             )
+            logger.debug("stt transcript raw text=%s", text)
             if not text:
                 continue
             transcript = Transcript(
@@ -233,7 +249,7 @@ class ServiceSttClient(SttClient):
                 yield transcript
                 return
             if len(text) < self.cfg.partial_min_chars:
-                logger.info("stt partial ignored because text is shorter than partial_min_chars text=%s", text)
+                logger.debug("stt partial ignored because text is shorter than partial_min_chars text=%s", text)
                 continue
             yield transcript
             if self.cfg.partial_fallback_sec <= 0:
@@ -277,10 +293,10 @@ class ServiceSttClient(SttClient):
                     return msg
 
 
-def _summarize_message(msg: dict | None) -> dict | None:
+def _summarize_message(msg: dict | None, *, include_text: bool = False) -> dict | None:
     if msg is None:
         return None
-    keys = (
+    keys = [
         "type",
         "cmd",
         "ok",
@@ -289,13 +305,13 @@ def _summarize_message(msg: dict | None) -> dict | None:
         "worker_state",
         "last_error",
         "audio_restart_count",
-        "last_text",
         "event",
         "is_final",
-        "text",
         "source",
         "segment_id",
-    )
+    ]
+    if include_text:
+        keys.extend(("last_text", "text"))
     return {key: msg.get(key) for key in keys if key in msg}
 
 

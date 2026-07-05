@@ -15,6 +15,20 @@ openai:
   extra_body:
     reasoning_effort: none
 
+llm:
+  # 回复由谁生成：
+  #   openai  —— 直连 LM Studio（上面的 openai: 段）
+  #   lollama —— 经 LoLLama 智能体服务（分层记忆 + 工具调用，再由它请求 LM Studio）
+  provider: openai
+
+lollama:
+  url: ws://127.0.0.1:8801/v1/llm/ws
+  # 单条回复的整体超时（秒）；含工具调用耗时
+  response_timeout_sec: 180
+  # 把 LoLLama 的状态钩子（"我算一下""让我想想"等）送 TTS 播报；
+  # 各阶段的播报文案在 LoLLama 侧 configs/config.yaml 的 status.announce 段配置
+  announce_status: true
+
 wake:
   enabled: true
   mode: service
@@ -53,6 +67,7 @@ duplex:
   system_prompt: >
     你是一个运行在本地电脑上的中文实时语音助手。
     回答要自然、简洁、适合直接朗读。需要写代码时保持清晰严谨。
+  # ChatCaht 直连 openai 时维护的短期对话窗口；provider=lollama 时 ChatCaht 只发当前文本
   max_history_turns: 8
   # 会话结束后回到待唤醒状态（随时可再次唤醒），而不是退出程序
   loop_forever: true
@@ -60,7 +75,7 @@ duplex:
   idle_timeout_sec: 60
   # 唤醒成功后播报的应答语；留空则不播报
   wake_ack_text: "我在"
-  # 重新唤醒开启新会话时是否清空对话历史
+  # 重新唤醒开启新会话时是否清空对话历史；provider=lollama 时同步 reset LoLLama 工作记忆
   reset_history_per_session: false
 
 runtime:
@@ -90,4 +105,6 @@ services:
   sptext_config: configs/config.example.yaml
   gvoice_dir: ../GVoice
   gvoice_config: configs/config.yaml
+  lollama_dir: ../LoLLama
+  lollama_config: configs/config.yaml
   startup_timeout_sec: 20

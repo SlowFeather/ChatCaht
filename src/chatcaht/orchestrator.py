@@ -7,6 +7,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from .adapters.llm import LollamaChatClient
 from .adapters.stt import SttClient
 from .adapters.tts import TtsClient
 from .adapters.wake import WakeClient
@@ -55,7 +56,7 @@ class VoiceSession:
         wake: WakeClient,
         stt: SttClient,
         tts: TtsClient,
-        llm: OpenAICompatibleClient | ChatModel,
+        llm: OpenAICompatibleClient | LollamaChatClient | ChatModel,
         audio: AudioSink,
         wake_trigger_words: list[str] | None = None,
         runtime: RuntimeConfig | None = None,
@@ -118,6 +119,10 @@ class VoiceSession:
                 if self.duplex.reset_history_per_session:
                     self._history = [{"role": "system", "content": self.duplex.system_prompt}]
                     self._clear_user_turn_cache()
+                    reset = getattr(self.llm, "reset", None)
+                    if reset is not None:
+                        with contextlib.suppress(Exception):
+                            await reset()
                 logger.info("returning to wake-word standby")
         finally:
             await self.stop()
@@ -309,15 +314,28 @@ class VoiceSession:
     # -------------------------------------------------------------- response
 
     async def _respond(self, user_text: str) -> None:
-        self._append_history("user", user_text)
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=8)
         full_text: list[str] = []
-        messages = [*self._history, {"role": "system", "content": SHORT_REPLY_PROMPT}]
+        backend_manages_history = bool(getattr(self.llm, "manages_conversation_history", False))
+        if backend_manages_history:
+            messages = [{"role": "user", "content": user_text}]
+        else:
+            self._append_history("user", user_text)
+            messages = [*self._history, {"role": "system", "content": SHORT_REPLY_PROMPT}]
+
+        async def announce_status(event: dict) -> None:
+            # LoLLama 状态钩子：把播报文案直接送 TTS，不进正文/历史
+            announce = str(event.get("announce") or "").strip()
+            if not announce:
+                return
+            logger.info("announcing agent status stage=%s text=%s", event.get("stage"), announce)
+            print(f"\n[状态] {announce}", flush=True)
+            await queue.put(announce)
 
         async def produce_segments() -> None:
             buffer = SentenceBuffer()
             try:
-                async for token in self._stream_llm(messages):
+                async for token in self._stream_llm(messages, on_status=announce_status):
                     full_text.append(token)
                     for segment in buffer.push(token):
                         await queue.put(segment)
@@ -355,18 +373,25 @@ class VoiceSession:
         else:
             assistant_text = "".join(full_text).strip()
             if assistant_text:
-                self._append_history("assistant", assistant_text)
+                if not backend_manages_history:
+                    self._append_history("assistant", assistant_text)
                 self.stats.assistant_turns += 1
                 logger.info("assistant response complete chars=%d", len(assistant_text))
                 print(f"\nAssistant: {assistant_text}", flush=True)
 
-    async def _stream_llm(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
-        """LLM 流式输出；若尚未产出任何 token 即失败，则重试一次。"""
+    async def _stream_llm(self, messages: list[dict[str, str]], *, on_status=None) -> AsyncIterator[str]:
+        """LLM 流式输出；若尚未产出任何 token 即失败，则重试一次。
+
+        on_status 仅对支持状态事件的客户端（LoLLama）传入。
+        """
+        kwargs = {}
+        if on_status is not None and getattr(self.llm, "supports_status_events", False):
+            kwargs["on_status"] = on_status
         attempts = 2
         for attempt in range(attempts):
             received = False
             try:
-                async for token in self.llm.stream_chat(messages):
+                async for token in self.llm.stream_chat(messages, **kwargs):
                     received = True
                     yield token
                 return
@@ -461,14 +486,21 @@ class VoiceSession:
 
     def _strip_repeated_user_prefix(self, text: str) -> str:
         if self._matches_cached_user_turn(text):
-            logger.info("ignored repeated stt transcript text=%s", text)
+            logger.info("ignored repeated stt transcript chars=%d", len(text))
+            logger.debug("ignored repeated stt transcript text=%s", text)
             return ""
         previous = self._longest_cached_user_prefix(text)
         if not previous:
             return text
         stripped = _trim_wake_separators(text[len(previous) :])
         if stripped:
-            logger.info("stripped repeated stt prefix previous=%s text=%s stripped=%s", previous, text, stripped)
+            logger.info(
+                "stripped repeated stt prefix previous_chars=%d raw_chars=%d stripped=%s",
+                len(previous),
+                len(text),
+                stripped,
+            )
+            logger.debug("stripped repeated stt prefix previous=%s text=%s stripped=%s", previous, text, stripped)
             return stripped
         return text
 
