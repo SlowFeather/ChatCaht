@@ -262,6 +262,16 @@ class VoiceSession:
         logger.info("user transcript kind=%s text=%s", transcript.kind.value, text)
         self._touch_activity()
 
+        if not transcript.is_final:
+            if self._current_response and not self._current_response.done():
+                if self.duplex.allow_barge_in:
+                    self.stats.interruptions += 1
+                    logger.info("barge-in detected from partial transcript; canceling current assistant response")
+                    await self._cancel_response()
+                else:
+                    logger.info("assistant is speaking; ignoring partial transcript while barge-in disabled")
+            return
+
         if self._is_end_session(text):
             logger.info("end session phrase detected")
             self._session_end.set()

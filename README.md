@@ -66,6 +66,8 @@ uv run chatcaht init-config --out configs/config.yaml
 - `openai.extra_body`：附加请求字段，原样并入 `/chat/completions` 请求体；思考型模型（如 Ollama 上的 qwen3.5）需要 `reasoning_effort: none` 关闭思考，否则回复内容为空且首字延迟极高
 - `wake.url`：WakeUp WebSocket 地址
 - `stt.url`：SpText WebSocket 地址
+- `stt.final_events_only`：默认只把 SpText 的 final 转写交给模型，避免用户话没说完就开始回复
+- `stt.partial_fallback_sec`：SpText 长期不产生 final 时的兜底停顿时间；默认 `1.2` 秒，太小会把一句话切成多轮，设为 `0` 可禁用兜底提交
 - `tts.url`：GVoice WebSocket 地址
 - `duplex.allow_barge_in`：是否允许打断
 - `duplex.end_session_words`：结束会话口令

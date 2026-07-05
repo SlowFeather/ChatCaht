@@ -57,6 +57,36 @@ async def test_barge_in_cancels_current_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_partial_barge_in_cancels_without_starting_new_response() -> None:
+    cfg = Config()
+    model = ScriptedModel(["slow first response", "second response"], delay=0.05)
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=model,
+        audio=NullAudioSink(),
+    )
+
+    await session.handle_transcript(Transcript("first question", TranscriptKind.FINAL))
+    await asyncio.sleep(0.01)
+    await session.handle_transcript(Transcript("second question", TranscriptKind.PARTIAL))
+    await asyncio.sleep(0.01)
+
+    assert session.stats.interruptions == 1
+    assert model.calls == 1
+    assert session.stats.user_turns == 1
+
+    await session.handle_transcript(Transcript("second question", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert model.calls == 2
+    assert session.stats.user_turns == 2
+    assert session.stats.assistant_turns == 1
+
+
+@pytest.mark.asyncio
 async def test_session_handles_100_turns_without_history_growth() -> None:
     cfg = Config()
     session = VoiceSession(

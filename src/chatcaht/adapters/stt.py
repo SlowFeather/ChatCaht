@@ -145,9 +145,12 @@ class ServiceSttClient(SttClient):
                         pending_partial = None
                         yield transcript
                     elif self.cfg.final_events_only:
-                        if len(text) >= self.cfg.partial_min_chars and self.cfg.partial_fallback_sec > 0:
+                        if len(text) >= self.cfg.partial_min_chars:
                             pending_partial = transcript
                             pending_partial_at = time.monotonic()
+                            yield transcript
+                            if self.cfg.partial_fallback_sec <= 0:
+                                continue
                             async for fallback in self._wait_for_partial_fallback(ws, pending_partial, pending_partial_at):
                                 if fallback.is_final:
                                     pending_partial = None
@@ -231,6 +234,9 @@ class ServiceSttClient(SttClient):
                 return
             if len(text) < self.cfg.partial_min_chars:
                 logger.info("stt partial ignored because text is shorter than partial_min_chars text=%s", text)
+                continue
+            yield transcript
+            if self.cfg.partial_fallback_sec <= 0:
                 continue
             pending = transcript
             pending_at = time.monotonic()

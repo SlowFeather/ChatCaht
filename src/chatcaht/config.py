@@ -44,7 +44,7 @@ class SttConfig:
     url: str = "ws://127.0.0.1:8790/v1/stt/ws"
     auto_start_listening: bool = True
     final_events_only: bool = True
-    partial_fallback_sec: float = 0.5
+    partial_fallback_sec: float = 1.2
     partial_min_chars: int = 2
 
 

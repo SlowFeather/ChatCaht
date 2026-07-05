@@ -76,15 +76,119 @@ async def test_service_stt_promotes_stale_partial_to_final() -> None:
     client = ServiceSttClient(cfg, timeout=2.0)
     try:
         stream = client.transcripts()
+        partial = await asyncio.wait_for(anext(stream), timeout=1.0)
+        assert not partial.is_final
         transcript = await asyncio.wait_for(anext(stream), timeout=1.0)
         assert transcript.is_final
-        assert transcript.text == "今天天气怎么样"
+        assert transcript.text == partial.text
         assert transcript.segment_id == 7
         for _ in range(20):
             if commands[:3] == ["start", "stop", "start"]:
                 break
             await asyncio.sleep(0.05)
         assert commands[:3] == ["start", "stop", "start"]
+        await stream.aclose()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_service_stt_waits_for_final_when_partial_fallback_disabled() -> None:
+    async def handler(ws):
+        await ws.send(json.dumps({"type": "status", "listening": True}))
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "start":
+                await ws.send(json.dumps({"type": "ack", "cmd": "start", "ok": True}))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "transcript",
+                            "event": "partial",
+                            "is_final": False,
+                            "text": "今天",
+                            "segment_id": 0,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    cfg = SttConfig(
+        url=f"ws://127.0.0.1:{port}/v1/stt/ws",
+        final_events_only=True,
+        partial_fallback_sec=0,
+    )
+    client = ServiceSttClient(cfg, timeout=2.0)
+    try:
+        stream = client.transcripts()
+        partial = await asyncio.wait_for(anext(stream), timeout=1.0)
+        assert not partial.is_final
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(anext(stream), timeout=0.15)
+        await stream.aclose()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_service_stt_resets_partial_fallback_timer_on_updated_partial() -> None:
+    sent = asyncio.Event()
+
+    async def handler(ws):
+        await ws.send(json.dumps({"type": "status", "listening": True}))
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "start":
+                await ws.send(json.dumps({"type": "ack", "cmd": "start", "ok": True}))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "transcript",
+                            "event": "partial",
+                            "is_final": False,
+                            "text": "西红柿",
+                            "segment_id": 0,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                await asyncio.sleep(0.06)
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "transcript",
+                            "event": "partial",
+                            "is_final": False,
+                            "text": "西红柿和香蕉哪个好吃",
+                            "segment_id": 0,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                sent.set()
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    cfg = SttConfig(
+        url=f"ws://127.0.0.1:{port}/v1/stt/ws",
+        final_events_only=True,
+        partial_fallback_sec=0.1,
+    )
+    client = ServiceSttClient(cfg, timeout=2.0)
+    try:
+        stream = client.transcripts()
+        first_partial = await asyncio.wait_for(anext(stream), timeout=1.0)
+        assert not first_partial.is_final
+        second_partial = await asyncio.wait_for(anext(stream), timeout=1.0)
+        assert not second_partial.is_final
+        transcript = await asyncio.wait_for(anext(stream), timeout=1.0)
+        assert sent.is_set()
+        assert transcript.is_final
+        assert transcript.text == second_partial.text
         await stream.aclose()
     finally:
         server.close()
@@ -135,6 +239,8 @@ async def test_service_stt_uses_real_final_before_partial_fallback() -> None:
     client = ServiceSttClient(cfg, timeout=2.0)
     try:
         stream = client.transcripts()
+        partial = await asyncio.wait_for(anext(stream), timeout=1.0)
+        assert not partial.is_final
         transcript = await asyncio.wait_for(anext(stream), timeout=1.0)
         assert transcript.is_final
         assert transcript.text == "今天天气怎么样"
