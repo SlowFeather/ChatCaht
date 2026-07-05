@@ -63,6 +63,7 @@ uv run chatcaht init-config --out configs/config.yaml
 - `openai.base_url`：OpenAI-compatible API 地址，例如 `https://api.openai.com/v1` 或本地兼容服务
 - `openai.api_key`：API Key；本地兼容服务可按需填写占位值
 - `openai.model`：模型名
+- `openai.extra_body`：附加请求字段，原样并入 `/chat/completions` 请求体；思考型模型（如 Ollama 上的 qwen3.5）需要 `reasoning_effort: none` 关闭思考，否则回复内容为空且首字延迟极高
 - `wake.url`：WakeUp WebSocket 地址
 - `stt.url`：SpText WebSocket 地址
 - `tts.url`：GVoice WebSocket 地址
@@ -136,6 +137,12 @@ uv run chatcaht chat
 uv run chatcaht chat --no-audio
 uv run chatcaht chat --once
 ```
+
+## 日志
+
+- 编排器日志：`artifacts/logs/chatcaht.log`（滚动 10MB × 5 份），包含服务启停、WebSocket 连接、每轮 LLM 首字/总延迟、TTS 合成耗时等
+- 托管服务各自的输出：`artifacts/logs/wakeup.service.log`、`sptext.service.log`、`gvoice.service.log`
+- 需要更细的连接/合成细节时把 `runtime.log_level` 调成 `DEBUG`
 
 ## 说明
 
