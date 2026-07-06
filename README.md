@@ -144,10 +144,26 @@ uv run chatcaht chat --no-audio
 uv run chatcaht chat --once
 ```
 
+## 监控看板
+
+`dashboard/` 是一个独立只读子项目：网页端实时展示各服务健康状态、管线链路、LLM/TTS 延迟走势、LoLLama 用户记忆（4 层条目 + 有效强度）和分服务日志查错，不影响主项目运行：
+
+```powershell
+uv run python dashboard/server.py
+# 打开 http://127.0.0.1:8899
+```
+
+详见 [dashboard/README.md](dashboard/README.md)。
+
 ## 日志
 
-- 编排器日志：`artifacts/logs/chatcaht.log`（滚动 10MB × 5 份），包含服务启停、WebSocket 连接、每轮 LLM 首字/总延迟、TTS 合成耗时等
-- 托管服务各自的输出：`artifacts/logs/wakeup.service.log`、`sptext.service.log`、`gvoice.service.log`
+全家（ChatCaht / WakeUp / SpText / GVoice / LoLLama）已统一日志规范：
+
+- **格式**：`2026-07-06 10:09:29,554 INFO chatcaht.orchestrator: 消息`（带毫秒；Dashboard 可直接解析做级别过滤与错误统计）
+- **编码**：文件日志一律 UTF-8 滚动日志（10MB × 5 份）；各服务 stdout/stderr 均切到 UTF-8，Windows GBK 控制台下中文不乱码、不抛 UnicodeEncodeError
+- 编排器日志：`artifacts/logs/chatcaht.log`，包含服务启停、WebSocket 连接、每轮 LLM 首字/总延迟、TTS 合成耗时等
+- 托管服务的 stdout 捕获：`artifacts/logs/wakeup.service.log`、`sptext.service.log`、`gvoice.service.log`、`lollama.service.log`
+- 各服务独立运行时写各自项目的 `artifacts/logs/*.log`（WakeUp 为 serve 模式新增的 `wakeup.log`），Dashboard 两边都接入并自动选用更新鲜的一份
 - 需要更细的连接/合成细节时把 `runtime.log_level` 调成 `DEBUG`
 
 ## 说明

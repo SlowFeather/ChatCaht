@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChatCaht 控制台</title>
+<style>
+:root{
+  --bg:#0b0e14;
+  --bg-soft:#11151f;
+  --card:rgba(255,255,255,.035);
+  --card-border:rgba(255,255,255,.08);
+  --text:#e7ecf3;
+  --muted:#8b94a7;
+  --accent:#5eead4;
+  --accent2:#818cf8;
+  --ok:#34d399;
+  --warn:#fbbf24;
+  --err:#f87171;
+  --idle:#64748b;
+  --mono:"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  --radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{
+  background:
+    radial-gradient(1100px 500px at 85% -10%, rgba(129,140,248,.13), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(94,234,212,.09), transparent 60%),
+    var(--bg);
+  color:var(--text);
+  font:14px/1.55 "Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  min-height:100vh;
+}
+.wrap{max-width:1280px;margin:0 auto;padding:22px 20px 60px}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{
+  width:38px;height:38px;border-radius:11px;flex:none;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  display:grid;place-items:center;font-weight:700;color:#0b0e14;font-size:17px;
+  box-shadow:0 4px 18px rgba(94,234,212,.28);
+}
+.brand h1{font-size:19px;font-weight:650;letter-spacing:.3px}
+.brand small{display:block;color:var(--muted);font-size:12px;font-weight:400}
+.spacer{flex:1}
+.pill{
+  display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;
+  background:var(--card);border:1px solid var(--card-border);font-size:12.5px;color:var(--muted);
+}
+.pill b{color:var(--text);font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 0 rgba(52,211,153,.5);animation:pulse 2s infinite}
+.dot.warn{background:var(--warn)}
+.dot.err{background:var(--err);animation:blink 1s infinite}
+.dot.idle{background:var(--idle)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.45)}70%{box-shadow:0 0 0 7px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+@keyframes blink{50%{opacity:.35}}
+
+/* ---------- pipeline ---------- */
+.pipeline{
+  display:flex;align-items:stretch;gap:0;overflow-x:auto;padding:16px;margin-bottom:20px;
+  background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);
+  backdrop-filter:blur(8px);
+}
+.pnode{flex:1;min-width:118px;text-align:center;position:relative;padding:6px 4px;border-radius:10px;cursor:pointer;transition:background .2s}
+.pnode:hover{background:rgba(255,255,255,.04)}
+.pnode .ic{
+  width:40px;height:40px;margin:0 auto 7px;border-radius:12px;display:grid;place-items:center;font-size:18px;
+  background:var(--bg-soft);border:1px solid var(--card-border);transition:border-color .3s,box-shadow .3s;
+}
+.pnode.online .ic{border-color:rgba(52,211,153,.55);box-shadow:0 0 14px rgba(52,211,153,.18)}
+.pnode.degraded .ic{border-color:rgba(251,191,36,.6);box-shadow:0 0 14px rgba(251,191,36,.15)}
+.pnode.offline .ic{border-color:rgba(248,113,113,.6);box-shadow:0 0 14px rgba(248,113,113,.18)}
+.pnode b{font-size:12.5px;display:block}
+.pnode span{font-size:11px;color:var(--muted)}
+.plink{flex:none;width:34px;display:flex;align-items:center;margin-top:-18px}
+.plink i{
+  display:block;width:100%;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,transparent,rgba(94,234,212,.7),transparent);
+  background-size:200% 100%;animation:flow 1.6s linear infinite;
+}
+.plink.dead i{background:rgba(255,255,255,.1);animation:none}
+@keyframes flow{from{background-position:200% 0}to{background-position:-200% 0}}
+
+/* ---------- cards ---------- */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:20px}
+.card{
+  background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);
+  padding:16px 17px;backdrop-filter:blur(8px);position:relative;overflow:hidden;
+  transition:transform .18s,border-color .18s;
+}
+.card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.16)}
+.card::before{
+  content:"";position:absolute;inset:0 0 auto 0;height:2px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:0;transition:opacity .2s;
+}
+.card.online::before{opacity:.9}
+.card.degraded::before{background:linear-gradient(90deg,var(--warn),#f97316);opacity:.9}
+.card.offline::before{background:linear-gradient(90deg,var(--err),#e11d48);opacity:.9}
+.card-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.card-head h3{font-size:15px;font-weight:650}
+.card-head .role{font-size:11.5px;color:var(--muted)}
+.badge{
+  margin-left:auto;font-size:11px;padding:3px 10px;border-radius:999px;font-weight:600;letter-spacing:.4px;
+  display:inline-flex;align-items:center;gap:6px;flex:none;
+}
+.badge.online{background:rgba(52,211,153,.12);color:var(--ok)}
+.badge.degraded{background:rgba(251,191,36,.12);color:var(--warn)}
+.badge.offline{background:rgba(248,113,113,.12);color:var(--err)}
+.badge.idle{background:rgba(100,116,139,.15);color:#94a3b8}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:5px 14px;font-size:12.3px}
+.kv div{display:flex;justify-content:space-between;gap:8px;color:var(--muted);min-width:0}
+.kv b{color:var(--text);font-weight:550;font-family:var(--mono);font-size:11.8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kv b.err{color:var(--err)}
+.kv b.warn{color:var(--warn)}
+.card .detail{
+  margin-top:9px;font-size:11.4px;color:var(--muted);font-family:var(--mono);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.card .detail.bad{color:var(--err)}
+.card .actions{margin-top:10px;display:flex;gap:8px}
+.btn{
+  font-size:11.5px;padding:5px 11px;border-radius:8px;border:1px solid var(--card-border);
+  background:rgba(255,255,255,.03);color:var(--muted);cursor:pointer;transition:all .15s;font-family:inherit;
+}
+.btn:hover{color:var(--text);border-color:rgba(94,234,212,.4)}
+.btn.hot{color:var(--err);border-color:rgba(248,113,113,.35)}
+.btn.hot:hover{background:rgba(248,113,113,.1)}
+
+/* ---------- metrics ---------- */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:20px}
+.metric{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:14px 16px 10px;backdrop-filter:blur(8px)}
+.metric .mh{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+.metric .mh span{font-size:12px;color:var(--muted)}
+.metric .mh b{margin-left:auto;font-size:19px;font-weight:650;font-family:var(--mono);background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.metric .mh small{font-size:11px;color:var(--muted)}
+.metric canvas{width:100%;height:44px;display:block}
+.metric .mfoot{font-size:10.5px;color:var(--muted);margin-top:3px}
+
+/* ---------- memory ---------- */
+.mempanel{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);backdrop-filter:blur(8px);overflow:hidden;margin-bottom:20px}
+.membar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--card-border)}
+.memtitle{font-size:13.5px;font-weight:650}
+.membar select{background:var(--bg-soft);border:1px solid var(--card-border);color:var(--text);border-radius:8px;padding:5px 9px;font-size:12px;font-family:inherit;outline:none}
+.membox{max-height:340px;overflow:auto;padding:6px 0;scrollbar-width:thin;scrollbar-color:#2a3446 transparent}
+.mitem{display:flex;gap:10px;align-items:flex-start;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,.04)}
+.mitem:hover{background:rgba(255,255,255,.03)}
+.mlayer{flex:none;font-size:10.5px;padding:2px 8px;border-radius:999px;font-weight:600;margin-top:1px}
+.mlayer.episodic{background:rgba(56,189,248,.12);color:#38bdf8}
+.mlayer.semantic{background:rgba(94,234,212,.12);color:var(--accent)}
+.mlayer.procedural{background:rgba(251,191,36,.12);color:var(--warn)}
+.mlayer.core{background:rgba(129,140,248,.16);color:var(--accent2)}
+.mtext{flex:1;font-size:12.5px;color:#cdd6e4;line-height:1.5;word-break:break-word}
+.mside{flex:none;width:130px;text-align:right}
+.mstat{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.mbar{height:4px;border-radius:4px;background:rgba(255,255,255,.07);margin-top:5px;overflow:hidden}
+.mbar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+
+/* ---------- logs ---------- */
+.logpanel{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);backdrop-filter:blur(8px);overflow:hidden}
+.logbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--card-border)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{
+  font-size:12px;padding:5px 12px;border-radius:8px;cursor:pointer;border:1px solid transparent;
+  color:var(--muted);background:transparent;transition:all .15s;font-family:inherit;
+}
+.tab:hover{color:var(--text)}
+.tab.active{background:rgba(94,234,212,.1);color:var(--accent);border-color:rgba(94,234,212,.3)}
+.logbar select,.logbar input{
+  background:var(--bg-soft);border:1px solid var(--card-border);color:var(--text);
+  border-radius:8px;padding:5px 9px;font-size:12px;font-family:inherit;outline:none;
+}
+.logbar input{width:170px}
+.logbar input:focus,.logbar select:focus{border-color:rgba(94,234,212,.45)}
+.chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+.logmeta{font-size:11px;color:var(--muted);margin-left:auto;font-family:var(--mono)}
+.logbox{height:430px;overflow:auto;padding:8px 0;font-family:var(--mono);font-size:11.8px;line-height:1.5;scrollbar-width:thin;scrollbar-color:#2a3446 transparent}
+.lrow{display:flex;gap:10px;padding:1px 14px;white-space:pre-wrap;word-break:break-all}
+.lrow:hover{background:rgba(255,255,255,.03)}
+.lrow .lts{color:#5b6577;flex:none}
+.lrow .llv{flex:none;width:52px;font-weight:600}
+.lrow .llg{color:#7c8ba1;flex:none;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .lmsg{color:#cdd6e4;min-width:0}
+.lrow.DEBUG .llv{color:#64748b}
+.lrow.INFO .llv{color:#38bdf8}
+.lrow.WARNING .llv{color:var(--warn)}
+.lrow.WARNING{background:rgba(251,191,36,.045)}
+.lrow.ERROR .llv,.lrow.CRITICAL .llv{color:var(--err)}
+.lrow.ERROR,.lrow.CRITICAL{background:rgba(248,113,113,.06);border-left:2px solid var(--err)}
+.lextra{padding:0 14px 2px 14px;color:#b08484;white-space:pre-wrap;word-break:break-all;font-size:11.2px;background:rgba(248,113,113,.04)}
+.empty{padding:40px;text-align:center;color:var(--muted);font-size:13px}
+footer{margin-top:18px;text-align:center;color:#3f4a5e;font-size:11px}
+
+/* ---------- responsive ---------- */
+@media (max-width:900px){
+  .kv{grid-template-columns:1fr}
+  .logbox{height:340px}
+  .logbar input{width:130px}
+}
+@media (max-width:620px){
+  .wrap{padding:14px 12px 40px}
+  header{gap:10px}
+  .brand h1{font-size:16px}
+  .grid{grid-template-columns:1fr}
+  .pill.hide-sm{display:none}
+  .pipeline{padding:12px 8px}
+  .pnode{min-width:96px}
+  .plink{width:18px}
+  .lrow .llg{display:none}
+  .logbox{font-size:11px;height:300px}
+  .mside{width:86px}
+  .mstat{font-size:9.8px}
+  .membox{max-height:280px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="logo">C</div>
+      <div>
+        <h1>ChatCaht 控制台</h1>
+        <small>全双工语音链路 · 项目状态与日志</small>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill hide-sm" id="providerPill">provider: <b>–</b></span>
+    <span class="pill" id="overallPill"><span class="dot idle"></span><b>连接中…</b></span>
+    <span class="pill hide-sm" id="clockPill">–</span>
+  </header>
+
+  <div class="pipeline" id="pipeline"></div>
+
+  <div class="grid" id="cards"></div>
+
+  <div class="metrics" id="metrics">
+    <div class="metric" data-key="llm_first_token">
+      <div class="mh"><span>LLM 首字延迟</span><b>–</b><small>s</small></div>
+      <canvas></canvas><div class="mfoot">来自 chatcaht.log · llm stream done</div>
+    </div>
+    <div class="metric" data-key="llm_total">
+      <div class="mh"><span>LLM 总耗时</span><b>–</b><small>s</small></div>
+      <canvas></canvas><div class="mfoot">直连 openai 模式的整轮生成耗时</div>
+    </div>
+    <div class="metric" data-key="lollama_elapsed">
+      <div class="mh"><span>LoLLama 回复耗时</span><b>–</b><small>s</small></div>
+      <canvas></canvas><div class="mfoot">含记忆检索与工具调用</div>
+    </div>
+    <div class="metric" data-key="tts_elapsed">
+      <div class="mh"><span>TTS 合成耗时</span><b>–</b><small>s</small></div>
+      <canvas></canvas><div class="mfoot">单句流式合成</div>
+    </div>
+  </div>
+
+  <div class="mempanel">
+    <div class="membar">
+      <span class="memtitle">🧠 用户记忆</span>
+      <select id="memUserSel" style="display:none"></select>
+      <div class="tabs" id="memTabs"></div>
+      <span class="logmeta" id="memMeta"></span>
+    </div>
+    <div class="membox" id="memBox"><div class="empty">加载中…</div></div>
+  </div>
+
+  <div class="logpanel">
+    <div class="logbar">
+      <div class="tabs" id="logTabs"></div>
+      <select id="levelSel">
+        <option value="ALL">全部级别</option>
+        <option value="INFO">INFO+</option>
+        <option value="WARNING">WARNING+</option>
+        <option value="ERROR">仅错误</option>
+      </select>
+      <input id="searchBox" type="search" placeholder="搜索日志…">
+      <label class="chk"><input type="checkbox" id="followChk" checked>自动跟随</label>
+      <span class="logmeta" id="logMeta"></span>
+    </div>
+    <div class="logbox" id="logBox"><div class="empty">加载中…</div></div>
+  </div>
+
+  <footer>ChatCaht Dashboard · 只读监控，不影响运行中的服务 · 状态每 3s 刷新</footer>
+</div>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const STATE_TXT={online:"运行中",degraded:"异常",offline:"离线",idle:"待机"};
+const STATE_DOT={online:"ok",degraded:"warn",offline:"err",idle:"idle"};
+const ICONS={chatcaht:"🎛️",wake:"🔔",stt:"🎙️",llm:"🧠",lmstudio:"⚙️",tts:"🔊"};
+const PIPE_ORDER=["wake","stt","chatcaht","llm","lmstudio","tts"];
+let currentLog="chatcaht.log", logTimer=null, statusData=null;
+
+function fmtBytes(n){if(n==null)return"–";if(n<1024)return n+" B";if(n<1048576)return(n/1024).toFixed(1)+" KB";return(n/1048576).toFixed(1)+" MB"}
+function fmtDur(s){if(s==null)return"–";if(s<60)return(s|0)+"s";if(s<3600)return(s/60|0)+"m "+(s%60|0)+"s";return(s/3600|0)+"h "+((s%3600)/60|0)+"m"}
+const MEM_LAYER_CN={working:"工作",episodic:"情景",semantic:"语义",procedural:"程序",core:"核心"};
+function fmtAgo(ts){if(!ts)return"–";const s=Date.now()/1000-ts;if(s<60)return Math.max(1,s|0)+" 秒前";if(s<3600)return(s/60|0)+" 分钟前";if(s<86400)return(s/3600|0)+" 小时前";return(s/86400|0)+" 天前"}
+function esc(t){const d=document.createElement("span");d.textContent=t==null?"":t;return d.innerHTML}
+
+/* ---------------- status ---------------- */
+async function refreshStatus(){
+  try{
+    const r=await fetch("/api/status");statusData=await r.json();
+    renderPipeline();renderCards();renderOverall();
+  }catch(e){
+    $("#overallPill").innerHTML='<span class="dot err"></span><b>看板服务不可达</b>';
+  }
+}
+function proj(key){return statusData?statusData.projects.find(p=>p.key===key):null}
+
+function renderOverall(){
+  const ps=statusData.projects.filter(p=>p.state!=="idle");
+  const off=ps.filter(p=>p.state==="offline").length;
+  const deg=ps.filter(p=>p.state==="degraded").length;
+  let cls="ok",txt="全链路正常";
+  if(off){cls="err";txt=off+" 个服务离线"}
+  else if(deg){cls="warn";txt=deg+" 个服务异常"}
+  $("#overallPill").innerHTML=`<span class="dot ${cls}"></span><b>${txt}</b>`;
+  $("#providerPill").innerHTML=`provider: <b>${esc(statusData.provider)}</b> · <b>${esc(statusData.model||"?")}</b>`;
+}
+
+function renderPipeline(){
+  const box=$("#pipeline");box.innerHTML="";
+  PIPE_ORDER.forEach((key,i)=>{
+    const p=proj(key);if(!p)return;
+    if(i>0){
+      const prev=proj(PIPE_ORDER[i-1]);
+      const link=document.createElement("div");
+      const dead=(p.state==="offline"||(prev&&prev.state==="offline"));
+      link.className="plink"+(dead?" dead":"");link.innerHTML="<i></i>";
+      box.appendChild(link);
+    }
+    const n=document.createElement("div");
+    n.className="pnode "+p.state;
+    n.innerHTML=`<div class="ic">${ICONS[key]||"📦"}</div><b>${esc(p.name)}</b>
+      <span>${p.health&&p.health.latency_ms!=null?p.health.latency_ms+" ms":STATE_TXT[p.state]}</span>`;
+    n.title=p.role;
+    n.onclick=()=>{if(p.log&&p.log.file)switchLog(p.log.file)};
+    box.appendChild(n);
+  });
+}
+
+function renderCards(){
+  const box=$("#cards");box.innerHTML="";
+  statusData.projects.forEach(p=>{
+    const h=p.health||{},lg=p.log||{},info=h.info||{};
+    const card=document.createElement("div");
+    card.className="card "+p.state;
+    const errCls=lg.recent_errors?"err":"", warnCls=lg.recent_warnings?"warn":"";
+    let infoRows="";
+    if("listening" in info)infoRows+=`<div><span>收音</span><b>${info.listening?"进行中":"已停"}</b></div>`;
+    if("ready" in info)infoRows+=`<div><span>就绪</span><b>${info.ready?"是":"否"}</b></div>`;
+    if("backend" in info)infoRows+=`<div><span>后端</span><b title="${esc(info.backend)}">${esc(info.backend)}</b></div>`;
+    if("uptime_seconds" in info)infoRows+=`<div><span>运行时长</span><b>${fmtDur(info.uptime_seconds)}</b></div>`;
+    if("requests_served" in info)infoRows+=`<div><span>已服务请求</span><b>${info.requests_served}</b></div>`;
+    if("clients" in info)infoRows+=`<div><span>连接数</span><b>${info.clients}</b></div>`;
+    let memLine="";
+    if(info.memory&&typeof info.memory==="object"){
+      const parts=Object.entries(info.memory).map(([k,v])=>`${MEM_LAYER_CN[k]||k} ${v}`);
+      memLine=`<div class="detail" title="5 层记忆条目数">🧠 记忆：${esc(parts.join(" · "))}</div>`;
+    }
+    card.innerHTML=`
+      <div class="card-head">
+        <span style="font-size:20px">${ICONS[p.key]||"📦"}</span>
+        <div><h3>${esc(p.name)}</h3><div class="role">${esc(p.role)}</div></div>
+        <span class="badge ${p.state}"><span class="dot ${STATE_DOT[p.state]}"></span>${STATE_TXT[p.state]}</span>
+      </div>
+      <div class="kv">
+        <div><span>端口</span><b>${p.port??"–"}</b></div>
+        <div><span>PID</span><b>${p.pid??"–"}${p.process==="stopped"&&p.pid?" ✕":""}</b></div>
+        <div><span>健康延迟</span><b>${h.latency_ms!=null?h.latency_ms+" ms":"–"}</b></div>
+        <div><span>日志更新</span><b>${fmtAgo(lg.mtime)}</b></div>
+        <div><span>日志大小</span><b>${fmtBytes(lg.size)}</b></div>
+        <div><span>近期错误</span><b class="${errCls}">${lg.recent_errors??"–"}</b></div>
+        <div><span>近期警告</span><b class="${warnCls}">${lg.recent_warnings??"–"}</b></div>
+        <div><span>进程</span><b>${p.process??"–"}</b></div>
+        ${infoRows}
+      </div>
+      ${memLine}
+      <div class="detail ${h.ok===false?"bad":""}" title="${esc(h.detail)}">${esc(h.detail||lg.last_line||"")}</div>`;
+    const acts=document.createElement("div");acts.className="actions";
+    if(lg.file){
+      const b1=document.createElement("button");b1.className="btn";b1.textContent="查看日志";
+      b1.onclick=()=>switchLog(lg.file);acts.appendChild(b1);
+      if(lg.recent_errors){
+        const b2=document.createElement("button");b2.className="btn hot";b2.textContent="定位错误 ("+lg.recent_errors+")";
+        b2.onclick=()=>{switchLog(lg.file);$("#levelSel").value="ERROR";loadLogs()};
+        acts.appendChild(b2);
+      }
+    }
+    if(acts.children.length)card.appendChild(acts);
+    box.appendChild(card);
+  });
+}
+
+/* ---------------- metrics ---------------- */
+async function refreshMetrics(){
+  try{
+    const r=await fetch("/api/metrics");const data=await r.json();
+    document.querySelectorAll(".metric").forEach(el=>{
+      const series=(data.series||{})[el.dataset.key]||[];
+      const bEl=el.querySelector(".mh b");
+      bEl.textContent=series.length?series[series.length-1].v.toFixed(2):"–";
+      drawSpark(el.querySelector("canvas"),series.map(x=>x.v));
+    });
+  }catch(e){}
+}
+function drawSpark(canvas,vals){
+  const dpr=window.devicePixelRatio||1;
+  const w=canvas.clientWidth||220,h=44;
+  canvas.width=w*dpr;canvas.height=h*dpr;
+  const ctx=canvas.getContext("2d");ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);
+  if(vals.length<2){ctx.fillStyle="rgba(139,148,167,.45)";ctx.font="10px sans-serif";ctx.fillText("暂无数据",6,26);return}
+  const max=Math.max(...vals),min=Math.min(...vals),span=(max-min)||1;
+  const pts=vals.map((v,i)=>[i/(vals.length-1)*(w-4)+2, h-5-((v-min)/span)*(h-14)]);
+  const grad=ctx.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,"rgba(94,234,212,.28)");grad.addColorStop(1,"rgba(94,234,212,0)");
+  ctx.beginPath();ctx.moveTo(pts[0][0],h);pts.forEach(p=>ctx.lineTo(p[0],p[1]));
+  ctx.lineTo(pts[pts.length-1][0],h);ctx.closePath();ctx.fillStyle=grad;ctx.fill();
+  ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+  ctx.strokeStyle="#5eead4";ctx.lineWidth=1.6;ctx.lineJoin="round";ctx.stroke();
+  const last=pts[pts.length-1];
+  ctx.beginPath();ctx.arc(last[0],last[1],2.6,0,7);ctx.fillStyle="#5eead4";ctx.fill();
+}
+
+/* ---------------- memory ---------------- */
+let memData=null, memLayer="ALL";
+async function refreshMemory(){
+  try{
+    const r=await fetch("/api/memory");memData=await r.json();
+    renderMemoryTabs();renderMemory();
+  }catch(e){}
+}
+function memUser(){
+  if(!memData||!memData.users||!memData.users.length)return null;
+  const sel=$("#memUserSel");
+  if(memData.users.length>1){
+    sel.style.display="";
+    const cur=sel.value;
+    sel.innerHTML=memData.users.map(u=>`<option value="${esc(u.user_id)}">${esc(u.user_id)}</option>`).join("");
+    if([...sel.options].some(o=>o.value===cur))sel.value=cur;
+  }
+  return memData.users.find(u=>u.user_id===sel.value)||memData.users[0];
+}
+function renderMemoryTabs(){
+  const u=memUser(),box=$("#memTabs");box.innerHTML="";
+  if(!u||u.error)return;
+  const mk=(key,label,count)=>{
+    const t=document.createElement("button");
+    t.className="tab"+(memLayer===key?" active":"");
+    t.textContent=`${label} ${count}`;
+    t.onclick=()=>{memLayer=key;renderMemoryTabs();renderMemory()};
+    box.appendChild(t);
+  };
+  mk("ALL","全部",u.total);
+  Object.entries(u.layers).forEach(([k,l])=>mk(k,l.label,l.count));
+}
+function renderMemory(){
+  const box=$("#memBox"),u=memUser();
+  if(!u){box.innerHTML=`<div class="empty">${esc(memData&&memData.error||"暂无记忆文件（LoLLama 对话后自动生成）")}</div>`;$("#memMeta").textContent="";return}
+  if(u.error){box.innerHTML=`<div class="empty">${esc(u.error)}</div>`;return}
+  let items=[];
+  Object.entries(u.layers).forEach(([k,l])=>{
+    if(memLayer==="ALL"||memLayer===k)items=items.concat(l.items.map(x=>({...x,layer:k,label:l.label})));
+  });
+  if(memLayer==="ALL")items.sort((a,b)=>b.effective-a.effective);
+  if(!items.length){box.innerHTML='<div class="empty">该层暂无记忆条目</div>';}
+  else{
+    const maxEff=Math.max(...items.map(x=>x.effective),0.001);
+    box.innerHTML=items.map(x=>`
+      <div class="mitem">
+        <span class="mlayer ${x.layer}">${esc(x.label)}</span>
+        <div class="mtext">${esc(x.text)}</div>
+        <div class="mside">
+          <div class="mstat">强度 ${x.effective.toFixed(2)} · 命中 ${x.hits}</div>
+          <div class="mstat">${fmtAgo(x.last_accessed)}</div>
+          <div class="mbar"><i style="width:${Math.min(100,x.effective/maxEff*100)}%"></i></div>
+        </div>
+      </div>`).join("");
+  }
+  $("#memMeta").textContent=`${u.user_id} · ${u.total} 条 · ${fmtAgo(u.mtime)}更新`;
+}
+$("#memUserSel").onchange=()=>{renderMemoryTabs();renderMemory()};
+
+/* ---------------- logs ---------------- */
+async function refreshLogTabs(){
+  try{
+    const r=await fetch("/api/logfiles");const data=await r.json();
+    const box=$("#logTabs");box.innerHTML="";
+    (data.logs||[]).filter(l=>l.size>0||l.name===currentLog).forEach(l=>{
+      const t=document.createElement("button");
+      t.className="tab"+(l.name===currentLog?" active":"");
+      const short=l.name.replace(".service.log","").replace(".log","");
+      // 托管日志裸名；项目自有日志带 ⌂ 标记（服务独立运行时以这份为准）
+      t.textContent=l.source==="project"?"⌂ "+short.replace(":","·"):short;
+      t.title=l.name+" · "+fmtBytes(l.size)+(l.source==="project"?" · 项目自有日志":" · ChatCaht 托管日志");
+      t.onclick=()=>switchLog(l.name);
+      box.appendChild(t);
+    });
+  }catch(e){}
+}
+function switchLog(name){
+  currentLog=name;
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.title.startsWith(name)));
+  loadLogs();
+  $(".logpanel").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+async function loadLogs(){
+  const level=$("#levelSel").value,q=$("#searchBox").value.trim();
+  try{
+    const r=await fetch(`/api/logs?name=${encodeURIComponent(currentLog)}&lines=400&level=${level}&q=${encodeURIComponent(q)}`);
+    const data=await r.json();
+    const box=$("#logBox");
+    if(data.error){box.innerHTML=`<div class="empty">${esc(data.error)}</div>`;return}
+    if(!data.entries.length){box.innerHTML='<div class="empty">没有匹配的日志行</div>';$("#logMeta").textContent="";return}
+    const follow=$("#followChk").checked;
+    const nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<60;
+    let html="";
+    data.entries.forEach(e=>{
+      html+=`<div class="lrow ${e.level}"><span class="lts">${esc(e.ts.slice(5))}</span><span class="llv">${esc(e.level)}</span><span class="llg">${esc(e.logger)}</span><span class="lmsg">${esc(e.msg)}</span></div>`;
+      if(e.extra&&e.extra.length)html+=`<div class="lextra">${esc(e.extra.join("\n"))}</div>`;
+    });
+    box.innerHTML=html;
+    $("#logMeta").textContent=`${data.count} 行 · ${fmtBytes(data.size)} · ${fmtAgo(data.mtime)}`;
+    if(follow&&nearBottom||follow&&!box.dataset.init){box.scrollTop=box.scrollHeight;box.dataset.init="1"}
+  }catch(e){}
+}
+
+/* ---------------- boot ---------------- */
+$("#levelSel").onchange=loadLogs;
+let searchDebounce=null;
+$("#searchBox").oninput=()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(loadLogs,300)};
+function tick(){$("#clockPill").textContent=new Date().toLocaleTimeString("zh-CN")}
+tick();setInterval(tick,1000);
+refreshStatus();refreshMetrics();refreshMemory();refreshLogTabs().then(loadLogs);
+setInterval(refreshStatus,3000);
+setInterval(refreshMetrics,10000);
+setInterval(refreshMemory,15000);
+setInterval(()=>{if($("#followChk").checked)loadLogs()},3000);
+setInterval(refreshLogTabs,15000);
+</script>
+</body>
+</html>
