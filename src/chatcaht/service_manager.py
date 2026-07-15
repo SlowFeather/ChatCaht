@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import signal
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+import psutil
 
 from .adapters.llm import LollamaChatClient
 from .adapters.stt import create_stt_client
@@ -122,12 +124,16 @@ class ServiceManager:
 
     async def start(self, names: list[ServiceName] | None = None, *, wait: bool = True) -> list[ServiceStatus]:
         names = names or self.default_names()
-        for name in names:
+        initial = await self.status(names)
+        for name, status in zip(names, initial):
             service = self._services[name]
-            status = await self.status_one(name)
             if status.running:
                 logger.info("service %s already running pid=%s", name, status.pid)
                 continue
+            if status.ok:
+                logger.info("service %s is healthy but externally managed; leaving it untouched", name)
+                continue
+            _remove_pid_file(service.pid_file)
             self._start_process(service)
         if wait:
             deadline = time.monotonic() + self.cfg.services.startup_timeout_sec
@@ -146,7 +152,11 @@ class ServiceManager:
 
     async def stop(self, names: list[ServiceName] | None = None) -> list[ServiceStatus]:
         names = names or self.default_names()
+        owned = {name: _owned_pid(self._services[name]) for name in names}
         for name in names:
+            if owned[name] is None:
+                logger.info("service %s has no verified owned process; skipping shutdown", name)
+                continue
             if name == "wake":
                 await _ignore_errors(create_wake_client(self.cfg.wake, timeout=2.0).stop())
                 await _ignore_errors(_shutdown_wake(self.cfg))
@@ -159,8 +169,8 @@ class ServiceManager:
         await asyncio.sleep(0.5)
         for name in names:
             service = self._services[name]
-            pid = _read_pid(service.pid_file)
-            if pid and _is_pid_running(pid):
+            pid = _owned_pid(service)
+            if pid is not None:
                 logger.info("terminating service %s pid=%d", name, pid)
                 _terminate_pid(pid)
             else:
@@ -170,12 +180,12 @@ class ServiceManager:
 
     async def status(self, names: list[ServiceName] | None = None) -> list[ServiceStatus]:
         names = names or self.default_names()
-        return [await self.status_one(name) for name in names]
+        return list(await asyncio.gather(*(self.status_one(name) for name in names)))
 
     async def status_one(self, name: ServiceName) -> ServiceStatus:
         service = self._services[name]
-        pid = _read_pid(service.pid_file)
-        running = bool(pid and _is_pid_running(pid))
+        pid = _owned_pid(service)
+        running = pid is not None
         ok, detail = await self._health(name)
         return ServiceStatus(name=name, running=running, pid=pid, ok=ok, detail=detail, log_file=service.log_file)
 
@@ -260,17 +270,64 @@ def _resolve(path: str) -> Path:
 
 
 def _write_pid(path: Path, pid: int, command: list[str], cwd: Path) -> None:
+    create_time = _process_create_time(pid)
     path.write_text(
-        json.dumps({"pid": pid, "command": command, "cwd": str(cwd), "created_at": time.time()}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "pid": pid,
+                "command": command,
+                "command_fingerprint": _command_fingerprint(command, cwd),
+                "cwd": str(cwd.resolve()),
+                "process_create_time": create_time,
+                "created_at": time.time(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
 
-def _read_pid(path: Path) -> int | None:
+def _read_pid_record(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return int(data["pid"])
+        return data if isinstance(data, dict) else None
     except Exception:
+        return None
+
+
+def _owned_pid(service: ManagedService) -> int | None:
+    record = _read_pid_record(service.pid_file)
+    if record is None:
+        return None
+    try:
+        pid = int(record["pid"])
+        expected_created = float(record["process_create_time"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if record.get("command_fingerprint") != _command_fingerprint(service.command, service.cwd):
+        return None
+    if Path(str(record.get("cwd") or "")).resolve() != service.cwd.resolve():
+        return None
+    actual_created = _process_create_time(pid)
+    if actual_created is None or abs(actual_created - expected_created) > 0.01:
+        return None
+    return pid
+
+
+def _command_fingerprint(command: list[str], cwd: Path) -> str:
+    payload = json.dumps(
+        {"command": [str(part) for part in command], "cwd": str(cwd.resolve())},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _process_create_time(pid: int) -> float | None:
+    try:
+        return float(psutil.Process(pid).create_time())
+    except (psutil.Error, OSError, ValueError):
         return None
 
 
@@ -282,18 +339,9 @@ def _remove_pid_file(path: Path) -> None:
 
 
 def _is_pid_running(pid: int) -> bool:
-    if os.name == "nt":
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return str(pid) in result.stdout
     try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
+        return psutil.pid_exists(pid) and psutil.Process(pid).is_running()
+    except psutil.Error:
         return False
 
 

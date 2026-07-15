@@ -74,13 +74,13 @@ class ServiceWakeClient(WakeClient):
     async def health(self) -> tuple[bool, str]:
         try:
             async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
-                await asyncio.wait_for(ws.recv(), timeout=self.timeout)
-                await ws.send(json.dumps({"type": "ping"}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 msg = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
-                if msg and msg.get("type") == "pong":
-                    return True, f"wake service reachable at {self.cfg.url}"
-                return True, f"wake service reachable; ping response={msg}"
+                if msg.get("type") != "status":
+                    return False, f"wake service returned unexpected health response: {msg.get('type')}"
+                if not msg.get("ready"):
+                    return False, str(msg.get("last_error") or msg.get("error") or f"wake service state={msg.get('state')}")
+                return True, f"wake ready state={msg.get('state')} model_loaded={msg.get('model_loaded')}"
         except Exception as exc:
             return False, str(exc)
 
@@ -121,7 +121,7 @@ class ServiceWakeClient(WakeClient):
                 msg = json.loads(raw)
                 typ = msg.get("type")
                 if typ == "error":
-                    return msg
+                    raise RuntimeError(str(msg.get("message") or msg.get("code") or f"wake {cmd} failed"))
                 if cmd == "status" and typ == "status":
                     return msg
                 if typ == "ack" and msg.get("cmd") == cmd:

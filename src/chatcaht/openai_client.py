@@ -34,8 +34,8 @@ class OpenAICompatibleClient:
             if self.cfg.model in model_ids:
                 return True, f"model available: {self.cfg.model}"
             if model_ids:
-                return True, f"OpenAI-compatible API reachable; configured model not listed. available={', '.join(model_ids[:5])}"
-            return True, "OpenAI-compatible API reachable; no models returned by /models"
+                return False, f"configured model not listed. available={', '.join(model_ids[:5])}"
+            return False, "OpenAI-compatible API returned no loaded models"
         except Exception as exc:
             return False, str(exc)
 

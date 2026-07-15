@@ -45,12 +45,14 @@ class LollamaChatClient:
     async def health(self) -> tuple[bool, str]:
         try:
             async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
-                await ws.send(json.dumps({"type": "ping"}))
+                await ws.send(json.dumps({"type": "status"}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 if isinstance(raw, bytes):
-                    return True, "lollama service reachable"
+                    return False, "lollama service returned binary health response"
                 msg = json.loads(raw)
-                return True, f"lollama service reachable; response={msg.get('type')}"
+                if msg.get("type") != "status" or not msg.get("ready"):
+                    return False, str(msg.get("last_error") or f"lollama service state={msg.get('state')}")
+                return True, f"lollama ready state={msg.get('state')} model_loaded={msg.get('model_loaded')}"
         except Exception as exc:
             return False, str(exc)
 

@@ -81,12 +81,13 @@ class ServiceSttClient(SttClient):
     async def health(self) -> tuple[bool, str]:
         try:
             async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
-                await ws.send(json.dumps({"type": "ping"}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
-                if isinstance(raw, bytes):
-                    return True, "stt service reachable"
                 msg = json.loads(raw)
-                return True, f"stt service reachable; response={msg.get('type')}"
+                if msg.get("type") != "status":
+                    return False, f"stt service returned unexpected health response: {msg.get('type')}"
+                if not msg.get("ready"):
+                    return False, str(msg.get("last_error") or f"stt service state={msg.get('state')}")
+                return True, f"stt ready state={msg.get('state')} model_loaded={msg.get('model_loaded')}"
         except Exception as exc:
             return False, str(exc)
 
@@ -281,7 +282,7 @@ class ServiceSttClient(SttClient):
                 msg_type = msg.get("type")
                 if msg_type == "error":
                     logger.warning("stt command %s error response: %s", typ, _summarize_message(msg))
-                    return msg
+                    raise RuntimeError(str(msg.get("message") or msg.get("code") or f"stt {typ} failed"))
                 if typ == "status" and msg_type == "status":
                     logger.info("stt command %s status response: %s", typ, _summarize_message(msg))
                     return msg

@@ -1,0 +1,54 @@
+version: 1
+components:
+  - name: wakeup
+    source: locally-trained custom wake word
+    provision:
+      manual_hint: Copy the trained xiaoyuan.onnx release asset to WakeUp/models/xiaoyuan.onnx.
+    assets:
+      - path: ../WakeUp/models/xiaoyuan.onnx
+        size: 1663250
+        sha256: 6b7576fdf0cdeb2fbe13e06e7d501d9f61a425843e325a7a63714b406e6d4206
+
+  - name: sptext
+    source: sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
+    provision:
+      cwd: ../SpText
+      command: [uv, run, sptext, model, download, --config, configs/config.example.yaml]
+    assets:
+      - path: ../SpText/artifacts/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt
+        size: 56317
+        sha256: a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3
+      - path: ../SpText/artifacts/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx
+        size: 330083505
+        sha256: 709f0ed53a734b7942f170127e7547b566cb29c4afc5e67719f314c3d63ccb10
+      - path: ../SpText/artifacts/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx
+        size: 13876452
+        sha256: 2e3b5ec371f8899ee6acd829fd753ba45772df57a91bdf37cde3136354e7db7d
+      - path: ../SpText/artifacts/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx
+        size: 12833618
+        sha256: 5f2adc585dd1bec6421c8bb8660d2a73fc8b9ceb24491ef51399ba2a2f0fc31b
+
+  - name: gvoice-cosyvoice3
+    source: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+    provision:
+      cwd: ../GVoice/sidecars/cosyvoice3
+      command: [uv, run, hf, download, FunAudioLLM/Fun-CosyVoice3-0.5B-2512, --local-dir, models/Fun-CosyVoice3-0.5B-2512]
+    assets:
+      - path: ../GVoice/sidecars/cosyvoice3/models/Fun-CosyVoice3-0.5B-2512/cosyvoice3.yaml
+        size: 6934
+        sha256: f5a6b2c6f05139d0f18861a1fe506f751e787026b77c05f7e8fef9f8a4405965
+      - path: ../GVoice/sidecars/cosyvoice3/models/Fun-CosyVoice3-0.5B-2512/campplus.onnx
+        size: 28303423
+        sha256: a6ac6a63997761ae2997373e2ee1c47040854b4b759ea41ec48e4e42df0f4d73
+      - path: ../GVoice/sidecars/cosyvoice3/models/Fun-CosyVoice3-0.5B-2512/flow.pt
+        size: 1329116148
+        sha256: a6fab32a7825e5b0bc855ddd948f8db9370b0a786fbc249caa4595e95b608e4b
+      - path: ../GVoice/sidecars/cosyvoice3/models/Fun-CosyVoice3-0.5B-2512/hift.pt
+        size: 83202622
+        sha256: b279d7641eb97ae55b3b540cfba4f953c26492a2df758328a89a4d007ab87a65
+      - path: ../GVoice/sidecars/cosyvoice3/models/Fun-CosyVoice3-0.5B-2512/llm.pt
+        size: 2024669519
+        sha256: 69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970
+      - path: ../GVoice/sidecars/cosyvoice3/models/Fun-CosyVoice3-0.5B-2512/speech_tokenizer_v3.onnx
+        size: 969451503
+        sha256: 23236a74175dbdda47afc66dbadd5bcb41303c467a57c261cb8539ad9db9208d

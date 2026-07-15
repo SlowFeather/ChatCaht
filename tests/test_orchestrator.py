@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import pytest
@@ -11,6 +12,7 @@ from chatcaht.adapters.wake import MockWakeClient
 from chatcaht.audio import NullAudioSink
 from chatcaht.config import Config
 from chatcaht.models import Transcript, TranscriptKind
+from chatcaht.metrics import MetricsRecorder
 from chatcaht.orchestrator import ChatModel, SentenceBuffer, VoiceSession
 from chatcaht.selftest import ScriptedModel, run_selftest
 
@@ -25,6 +27,32 @@ def test_sentence_buffer_flushes_on_max_chars() -> None:
     buf = SentenceBuffer(min_chars=3, max_chars=5)
     assert buf.push("abcdef") == ["abcde"]
     assert buf.flush() == "f"
+
+
+@pytest.mark.asyncio
+async def test_unpunctuated_reply_flushes_after_timeout_and_records_metrics(tmp_path) -> None:
+    cfg = Config()
+    cfg.duplex.tts_segment_min_chars = 3
+    cfg.duplex.tts_segment_flush_ms = 20
+    tts = CapturingTts()
+    metrics_path = tmp_path / "metrics.jsonl"
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=tts,
+        llm=PausingModel(),
+        audio=NullAudioSink(),
+        metrics=MetricsRecorder(metrics_path),
+    )
+
+    await session.handle_transcript(Transcript("test", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert tts.texts == ["abcdef", "gh"]
+    events = [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines()]
+    names = {event["metric"] for event in events}
+    assert {"asr_final", "llm_first_token", "tts_first_pcm", "playback_start", "turn_total"} <= names
 
 
 @pytest.mark.asyncio
@@ -472,3 +500,19 @@ class BackendHistoryModel(CapturingModel):
         user_messages = [message["content"] for message in messages if message["role"] == "user"]
         self.last_user_message = user_messages[-1]
         yield "backend ok."
+
+
+class PausingModel(ChatModel):
+    async def stream_chat(self, messages: list[dict[str, str]]):
+        yield "abcdef"
+        await asyncio.sleep(0.06)
+        yield "gh"
+
+
+class CapturingTts:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def synthesize(self, text: str):
+        self.texts.append(text)
+        yield type("Chunk", (), {"pcm": b"\x00\x00", "sample_rate": 16000, "channels": 1})()

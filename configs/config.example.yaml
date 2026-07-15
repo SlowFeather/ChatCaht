@@ -2,6 +2,7 @@ paths:
   artifacts_dir: artifacts
   logs_dir: artifacts/logs
   output_dir: artifacts/output
+  metrics_file: artifacts/metrics/turns.jsonl
 
 openai:
   base_url: http://127.0.0.1:1234/v1
@@ -77,6 +78,9 @@ duplex:
   wake_ack_text: "我在"
   # 重新唤醒开启新会话时是否清空对话历史；provider=lollama 时同步 reset LoLLama 工作记忆
   reset_history_per_session: false
+  tts_segment_min_chars: 6
+  tts_segment_max_chars: 80
+  tts_segment_flush_ms: 350
 
 runtime:
   log_level: INFO

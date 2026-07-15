@@ -11,6 +11,7 @@ from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
 from .audio import AudioSink
 from .config import Config
+from .metrics import MetricsRecorder
 from .orchestrator import VoiceSession
 from .service_manager import ServiceManager
 
@@ -92,6 +93,7 @@ class Supervisor:
             audio=audio,
             wake_trigger_words=cfg.wake.trigger_words,
             runtime=cfg.runtime,
+            metrics=MetricsRecorder(cfg.paths.metrics_file),
         )
         self.session = session
         try:

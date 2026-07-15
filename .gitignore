@@ -1,4 +1,5 @@
 .venv/
+configs/config.yaml
 .pytest_cache/
 __pycache__/
 *.py[cod]

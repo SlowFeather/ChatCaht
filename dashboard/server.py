@@ -166,6 +166,10 @@ def build_projects(cfg: dict) -> list[dict]:
 INFO_FIELDS = (
     "listening",
     "ready",
+    "state",
+    "model_loaded",
+    "audio_open",
+    "last_error",
     "backend",
     "model",
     "upstream",
@@ -214,7 +218,10 @@ def ws_health(url: str, *, recv_first: bool, query: str = "ping", timeout: float
                 info.update(_pick_info(frame))
             except Exception:
                 pass
-        return {"ok": True, "latency_ms": latency, "detail": detail, "info": info}
+        ready = info.get("ready") is not False
+        if not ready:
+            detail = str(info.get("last_error") or f"service state={info.get('state')}")
+        return {"ok": ready, "latency_ms": latency, "detail": detail, "info": info}
     except Exception as exc:
         return {"ok": False, "latency_ms": None, "detail": f"{type(exc).__name__}: {exc}", "info": info}
 
@@ -467,6 +474,28 @@ def _project_state(project: dict, health: dict, process: str | None, log: dict, 
 
 
 def collect_metrics() -> dict:
+    cfg = load_config()
+    metrics_raw = (cfg.get("paths") or {}).get("metrics_file", "artifacts/metrics/turns.jsonl")
+    metrics_path = Path(metrics_raw)
+    if not metrics_path.is_absolute():
+        metrics_path = ROOT / metrics_path
+    structured: dict[str, list] = {}
+    if metrics_path.exists():
+        for line in tail_text(metrics_path, max_bytes=2_000_000):
+            try:
+                event = json.loads(line)
+                key = str(event.get("metric") or "")
+                value = event.get("value_ms")
+                ts = float(event.get("ts"))
+                if key and value is not None:
+                    structured.setdefault(key, []).append({"t": ts, "v": float(value)})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        if structured:
+            series = {key: values[-120:] for key, values in structured.items()}
+            summary = {key: _metric_summary(values) for key, values in series.items()}
+            return {"series": series, "summary": summary, "unit": "ms", "source": str(metrics_path)}
+
     path = ROOT / "artifacts" / "logs" / "chatcaht.log"
     series: dict[str, list] = {key: [] for key in METRIC_PATTERNS}
     if not path.exists():
@@ -483,10 +512,30 @@ def collect_metrics() -> dict:
                     ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
                 except ValueError:
                     continue
-                series[key].append({"t": ts, "v": float(hit.group(1))})
+                    series[key].append({"t": ts, "v": float(hit.group(1)) * 1000})
     for key in series:
         series[key] = series[key][-120:]
-    return {"series": series}
+    return {
+        "series": series,
+        "summary": {key: _metric_summary(values) for key, values in series.items()},
+        "unit": "ms",
+        "source": str(path),
+    }
+
+
+def _metric_summary(values: list[dict]) -> dict:
+    ordered = sorted(float(item["v"]) for item in values)
+    if not ordered:
+        return {"count": 0, "p50": None, "p95": None}
+
+    def percentile(q: float) -> float:
+        return ordered[round((len(ordered) - 1) * q)]
+
+    return {
+        "count": len(ordered),
+        "p50": round(percentile(0.50), 2),
+        "p95": round(percentile(0.95), 2),
+    }
 
 
 # ---------------------------------------------------------------- 用户记忆

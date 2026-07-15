@@ -131,7 +131,7 @@ header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20p
 .btn.hot:hover{background:rgba(248,113,113,.1)}
 
 /* ---------- metrics ---------- */
-.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:20px}
+.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:20px}
 .metric{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:14px 16px 10px;backdrop-filter:blur(8px)}
 .metric .mh{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
 .metric .mh span{font-size:12px;color:var(--muted)}
@@ -196,11 +196,13 @@ footer{margin-top:18px;text-align:center;color:#3f4a5e;font-size:11px}
 
 /* ---------- responsive ---------- */
 @media (max-width:900px){
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
   .kv{grid-template-columns:1fr}
   .logbox{height:340px}
   .logbar input{width:130px}
 }
 @media (max-width:620px){
+  .metrics{grid-template-columns:1fr}
   .wrap{padding:14px 12px 40px}
   header{gap:10px}
   .brand h1{font-size:16px}
@@ -240,20 +242,28 @@ footer{margin-top:18px;text-align:center;color:#3f4a5e;font-size:11px}
 
   <div class="metrics" id="metrics">
     <div class="metric" data-key="llm_first_token">
-      <div class="mh"><span>LLM 首字延迟</span><b>–</b><small>s</small></div>
-      <canvas></canvas><div class="mfoot">来自 chatcaht.log · llm stream done</div>
+      <div class="mh"><span>LLM 首字延迟</span><b>–</b><small>ms</small></div>
+      <canvas></canvas><div class="mfoot">p50 – · p95 –</div>
     </div>
-    <div class="metric" data-key="llm_total">
-      <div class="mh"><span>LLM 总耗时</span><b>–</b><small>s</small></div>
-      <canvas></canvas><div class="mfoot">直连 openai 模式的整轮生成耗时</div>
+    <div class="metric" data-key="endpoint_latency">
+      <div class="mh"><span>ASR 尾延迟</span><b>–</b><small>ms</small></div>
+      <canvas></canvas><div class="mfoot">p50 – · p95 –</div>
     </div>
-    <div class="metric" data-key="lollama_elapsed">
-      <div class="mh"><span>LoLLama 回复耗时</span><b>–</b><small>s</small></div>
-      <canvas></canvas><div class="mfoot">含记忆检索与工具调用</div>
+    <div class="metric" data-key="tts_first_pcm">
+      <div class="mh"><span>TTS 首音频</span><b>–</b><small>ms</small></div>
+      <canvas></canvas><div class="mfoot">p50 – · p95 –</div>
     </div>
-    <div class="metric" data-key="tts_elapsed">
-      <div class="mh"><span>TTS 合成耗时</span><b>–</b><small>s</small></div>
-      <canvas></canvas><div class="mfoot">单句流式合成</div>
+    <div class="metric" data-key="playback_start">
+      <div class="mh"><span>回复至播放</span><b>–</b><small>ms</small></div>
+      <canvas></canvas><div class="mfoot">p50 – · p95 –</div>
+    </div>
+    <div class="metric" data-key="barge_in_silence">
+      <div class="mh"><span>打断静音</span><b>–</b><small>ms</small></div>
+      <canvas></canvas><div class="mfoot">p50 – · p95 –</div>
+    </div>
+    <div class="metric" data-key="turn_total">
+      <div class="mh"><span>单轮总耗时</span><b>–</b><small>ms</small></div>
+      <canvas></canvas><div class="mfoot">p50 – · p95 –</div>
     </div>
   </div>
 
@@ -403,8 +413,10 @@ async function refreshMetrics(){
     const r=await fetch("/api/metrics");const data=await r.json();
     document.querySelectorAll(".metric").forEach(el=>{
       const series=(data.series||{})[el.dataset.key]||[];
+      const summary=(data.summary||{})[el.dataset.key]||{};
       const bEl=el.querySelector(".mh b");
-      bEl.textContent=series.length?series[series.length-1].v.toFixed(2):"–";
+      bEl.textContent=series.length?series[series.length-1].v.toFixed(0):"–";
+      el.querySelector(".mfoot").textContent=`p50 ${summary.p50??"–"} · p95 ${summary.p95??"–"} · n ${summary.count??0}`;
       drawSpark(el.querySelector("canvas"),series.map(x=>x.v));
     });
   }catch(e){}

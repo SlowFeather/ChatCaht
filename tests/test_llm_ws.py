@@ -152,17 +152,21 @@ async def test_stream_chat_cancellation_sends_cancel_without_closing_connection(
 
 
 @pytest.mark.asyncio
-async def test_lollama_health_ping_pong() -> None:
+async def test_lollama_health_requires_ready_status() -> None:
     async def handler(ws):
         async for raw in ws:
-            if json.loads(raw).get("type") == "ping":
-                await ws.send(json.dumps({"type": "pong"}))
+            if json.loads(raw).get("type") == "status":
+                await ws.send(
+                    json.dumps(
+                        {"type": "status", "ready": True, "state": "ready", "model_loaded": True}
+                    )
+                )
 
     async with fake_lollama(handler) as url:
         client = LollamaChatClient(LollamaConfig(url=url), timeout=2.0)
         ok, detail = await client.health()
         assert ok
-        assert "pong" in detail
+        assert "ready" in detail
 
 
 @pytest.mark.asyncio

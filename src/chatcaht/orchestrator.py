@@ -4,6 +4,7 @@ import asyncio
 import logging
 import contextlib
 import time
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -14,6 +15,7 @@ from .adapters.wake import WakeClient
 from .audio import AudioSink
 from .config import DuplexConfig, RuntimeConfig
 from .models import Transcript
+from .metrics import MetricsRecorder
 from .openai_client import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,7 @@ class VoiceSession:
         audio: AudioSink,
         wake_trigger_words: list[str] | None = None,
         runtime: RuntimeConfig | None = None,
+        metrics: MetricsRecorder | None = None,
     ) -> None:
         self.duplex = duplex
         self.wake = wake
@@ -69,6 +72,8 @@ class VoiceSession:
         self.audio = audio
         self.wake_trigger_words = [word.strip() for word in wake_trigger_words or [] if word.strip()]
         self.stats = SessionStats()
+        self.metrics = metrics or MetricsRecorder()
+        self._session_id = uuid.uuid4().hex[:12]
         self._history: list[dict[str, str]] = [{"role": "system", "content": duplex.system_prompt}]
         self._user_turn_cache: dict[int, dict[str, str]] = {}
         self._next_user_turn_id = 0
@@ -153,6 +158,12 @@ class VoiceSession:
             try:
                 async for event in stream:
                     self.stats.wake_events += 1
+                    self.metrics.record(
+                        "wake_detected",
+                        session_id=self._session_id,
+                        model=event.model,
+                        score=event.score,
+                    )
                     logger.info("wake detected model=%s score=%.3f", event.model, event.score)
                     return True
                 # 事件流正常结束但没有唤醒事件（如 disabled 客户端）
@@ -277,6 +288,21 @@ class VoiceSession:
                     logger.info("stt transcript ignored after end session word stripping")
                     return
         logger.info("user transcript kind=%s text=%s", transcript.kind.value, text)
+        raw = transcript.raw or {}
+        self.metrics.record(
+            "asr_final" if transcript.is_final else "asr_partial",
+            session_id=self._session_id,
+            turn_id=self._next_user_turn_id,
+            segment_id=transcript.segment_id,
+        )
+        if transcript.is_final and raw.get("endpoint_latency_ms") is not None:
+            self.metrics.record(
+                "endpoint_latency",
+                value_ms=raw["endpoint_latency_ms"],
+                session_id=self._session_id,
+                turn_id=self._next_user_turn_id,
+                segment_id=transcript.segment_id,
+            )
         self._touch_activity()
 
         if not transcript.is_final:
@@ -284,7 +310,13 @@ class VoiceSession:
                 if self.duplex.allow_barge_in:
                     self.stats.interruptions += 1
                     logger.info("barge-in detected from partial transcript; canceling current assistant response")
+                    started = time.monotonic()
                     await self._cancel_response()
+                    self.metrics.record(
+                        "barge_in_silence",
+                        value_ms=(time.monotonic() - started) * 1000,
+                        session_id=self._session_id,
+                    )
                 else:
                     logger.info("assistant is speaking; ignoring partial transcript while barge-in disabled")
             return
@@ -293,7 +325,13 @@ class VoiceSession:
             if self.duplex.allow_barge_in:
                 self.stats.interruptions += 1
                 logger.info("barge-in detected; canceling current assistant response")
+                started = time.monotonic()
                 await self._cancel_response()
+                self.metrics.record(
+                    "barge_in_silence",
+                    value_ms=(time.monotonic() - started) * 1000,
+                    session_id=self._session_id,
+                )
             else:
                 logger.info("assistant is speaking; ignoring transcript while barge-in disabled")
                 return
@@ -301,8 +339,9 @@ class VoiceSession:
         if transcript.is_final:
             print(f"\nUser: {text}", flush=True)
             self.stats.user_turns += 1
+            turn_id = self._next_user_turn_id
             self._remember_user_turn(raw_stt_text=stt_text, submitted_text=text)
-            self._current_response = asyncio.create_task(self._respond(text))
+            self._current_response = asyncio.create_task(self._respond(text, turn_id=turn_id))
             self._current_response.add_done_callback(self._on_response_done)
 
     async def wait_for_idle(self) -> None:
@@ -313,9 +352,10 @@ class VoiceSession:
 
     # -------------------------------------------------------------- response
 
-    async def _respond(self, user_text: str) -> None:
-        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=8)
+    async def _respond(self, user_text: str, *, turn_id: int) -> None:
+        queue: asyncio.Queue[tuple[str, str] | None] = asyncio.Queue(maxsize=8)
         full_text: list[str] = []
+        response_started = time.monotonic()
         backend_manages_history = bool(getattr(self.llm, "manages_conversation_history", False))
         if backend_manages_history:
             messages = [{"role": "user", "content": user_text}]
@@ -330,28 +370,93 @@ class VoiceSession:
                 return
             logger.info("announcing agent status stage=%s text=%s", event.get("stage"), announce)
             print(f"\n[状态] {announce}", flush=True)
-            await queue.put(announce)
+            await queue.put(("status", announce))
 
         async def produce_segments() -> None:
-            buffer = SentenceBuffer()
+            buffer = SentenceBuffer(
+                min_chars=self.duplex.tts_segment_min_chars,
+                max_chars=self.duplex.tts_segment_max_chars,
+            )
+            tokens: asyncio.Queue[str | object] = asyncio.Queue(maxsize=64)
+            token_end = object()
+            llm_started = time.monotonic()
+            first_token = True
+
+            async def pump_tokens() -> None:
+                nonlocal first_token
+                try:
+                    async for token in self._stream_llm(messages, on_status=announce_status):
+                        if first_token:
+                            first_token = False
+                            self.metrics.record(
+                                "llm_first_token",
+                                value_ms=(time.monotonic() - llm_started) * 1000,
+                                session_id=self._session_id,
+                                turn_id=turn_id,
+                            )
+                        full_text.append(token)
+                        await tokens.put(token)
+                finally:
+                    await tokens.put(token_end)
+
+            pump = asyncio.create_task(pump_tokens())
             try:
-                async for token in self._stream_llm(messages, on_status=announce_status):
-                    full_text.append(token)
+                while True:
+                    timeout = (
+                        self.duplex.tts_segment_flush_ms / 1000
+                        if buffer.size >= buffer.min_chars
+                        else None
+                    )
+                    try:
+                        item = await asyncio.wait_for(tokens.get(), timeout=timeout) if timeout else await tokens.get()
+                    except TimeoutError:
+                        segment = buffer.flush()
+                        if segment:
+                            await queue.put(("reply", segment))
+                        continue
+                    if item is token_end:
+                        break
+                    assert isinstance(item, str)
+                    token = item
                     for segment in buffer.push(token):
-                        await queue.put(segment)
+                        await queue.put(("reply", segment))
                 tail = buffer.flush()
                 if tail:
-                    await queue.put(tail)
+                    await queue.put(("reply", tail))
             finally:
+                if not pump.done():
+                    pump.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await pump
                 await queue.put(None)
 
         async def consume_segments() -> None:
+            first_reply_pcm = True
+            first_reply_request_at: float | None = None
             while True:
-                segment = await queue.get()
-                if segment is None:
+                item = await queue.get()
+                if item is None:
                     return
+                kind, segment = item
+                if kind == "reply" and first_reply_request_at is None:
+                    first_reply_request_at = time.monotonic()
                 try:
                     async for chunk in self.tts.synthesize(segment):
+                        if kind == "reply" and first_reply_pcm:
+                            first_reply_pcm = False
+                            now = time.monotonic()
+                            self.metrics.record(
+                                "tts_first_pcm",
+                                value_ms=(now - (first_reply_request_at or now)) * 1000,
+                                session_id=self._session_id,
+                                turn_id=turn_id,
+                            )
+                            self.metrics.record(
+                                "playback_start",
+                                value_ms=(now - response_started) * 1000,
+                                session_id=self._session_id,
+                                turn_id=turn_id,
+                            )
                         self.stats.tts_chunks += 1
                         await self.audio.play(chunk.pcm, sample_rate=chunk.sample_rate, channels=chunk.channels)
                 except asyncio.CancelledError:
@@ -376,6 +481,13 @@ class VoiceSession:
                 if not backend_manages_history:
                     self._append_history("assistant", assistant_text)
                 self.stats.assistant_turns += 1
+                self.metrics.record(
+                    "turn_total",
+                    value_ms=(time.monotonic() - response_started) * 1000,
+                    session_id=self._session_id,
+                    turn_id=turn_id,
+                    chars=len(assistant_text),
+                )
                 logger.info("assistant response complete chars=%d", len(assistant_text))
                 print(f"\nAssistant: {assistant_text}", flush=True)
 
@@ -554,6 +666,10 @@ class SentenceBuffer:
         self.min_chars = min_chars
         self.max_chars = max_chars
         self._buf: list[str] = []
+
+    @property
+    def size(self) -> int:
+        return len(self._buf)
 
     def push(self, token: str) -> list[str]:
         segments: list[str] = []

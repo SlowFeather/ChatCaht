@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ class PathsConfig:
     artifacts_dir: str = "artifacts"
     logs_dir: str = "artifacts/logs"
     output_dir: str = "artifacts/output"
+    metrics_file: str = "artifacts/metrics/turns.jsonl"
 
 
 @dataclass(slots=True)
@@ -96,6 +98,9 @@ class DuplexConfig:
     wake_ack_text: str = ""
     # 每次重新唤醒开启新会话时清空对话历史
     reset_history_per_session: bool = False
+    tts_segment_min_chars: int = 6
+    tts_segment_max_chars: int = 80
+    tts_segment_flush_ms: int = 350
 
 
 @dataclass(slots=True)
@@ -152,6 +157,7 @@ class Config:
     def ensure_dirs(self) -> None:
         for path in (self.paths.artifacts_dir, self.paths.logs_dir, self.paths.output_dir):
             Path(path).mkdir(parents=True, exist_ok=True)
+        Path(self.paths.metrics_file).parent.mkdir(parents=True, exist_ok=True)
 
     @property
     def lmstudio(self) -> OpenAIConfig:
@@ -167,6 +173,8 @@ def load_config(path: str | Path | None = None) -> Config:
             raise ValueError("config file must contain a mapping")
         data = _normalize_config_keys(data)
         _merge(cfg, data)
+    if api_key := os.environ.get("CHATCAHT_OPENAI_API_KEY"):
+        cfg.openai.api_key = api_key
     validate_config(cfg)
     return cfg
 
@@ -219,6 +227,12 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("lollama.response_timeout_sec must be positive")
     if cfg.duplex.max_history_turns < 1:
         raise ValueError("duplex.max_history_turns must be positive")
+    if cfg.duplex.tts_segment_min_chars < 1:
+        raise ValueError("duplex.tts_segment_min_chars must be positive")
+    if cfg.duplex.tts_segment_max_chars < cfg.duplex.tts_segment_min_chars:
+        raise ValueError("duplex.tts_segment_max_chars must be >= tts_segment_min_chars")
+    if cfg.duplex.tts_segment_flush_ms < 1:
+        raise ValueError("duplex.tts_segment_flush_ms must be positive")
     if cfg.openai.max_tokens < 1:
         raise ValueError("openai.max_tokens must be positive")
     if cfg.runtime.health_timeout_sec <= 0:

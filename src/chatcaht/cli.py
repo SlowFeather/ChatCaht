@@ -12,9 +12,11 @@ from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
 from .audio import NullAudioSink, SoundDeviceSink, WaveFileSink
+from .assets import provision_missing, verify_manifest
 from .config import Config, load_config
 from .health import run_health_checks
 from .logging import setup_logging
+from .metrics import MetricsRecorder
 from .orchestrator import VoiceSession
 from .service_manager import ServiceManager
 from .selftest import run_selftest
@@ -67,12 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init-config", help="Copy the example config to a writable path")
     init.add_argument("--out", default="configs/config.yaml")
     init.add_argument("--force", action="store_true")
+    assets = sub.add_parser("assets", help="Verify or provision stack model assets")
+    assets.add_argument("action", choices=["verify", "download"])
+    assets.add_argument("--manifest", default="stack/models.manifest.yaml")
     return parser
 
 
 async def _amain(args: argparse.Namespace) -> int:
     if args.command == "init-config":
         return _init_config(args)
+    if args.command == "assets":
+        return _assets(args)
 
     cfg = load_config(args.config)
     cfg.ensure_dirs()
@@ -108,6 +115,16 @@ def _init_config(args: argparse.Namespace) -> int:
     shutil.copyfile(src, dst)
     print(f"已创建配置: {dst}")
     return 0
+
+
+def _assets(args: argparse.Namespace) -> int:
+    results = provision_missing(args.manifest) if args.action == "download" else verify_manifest(args.manifest)
+    ok = True
+    for result in results:
+        mark = "OK" if result.ok else "FAIL"
+        print(f"[{mark}] {result.component}: {result.path} ({result.detail})")
+        ok = ok and result.ok
+    return 0 if ok else 2
 
 
 async def _doctor(cfg: Config) -> int:
@@ -179,6 +196,7 @@ async def _chat(cfg: Config, args: argparse.Namespace) -> int:
         audio=audio,
         wake_trigger_words=cfg.wake.trigger_words,
         runtime=cfg.runtime,
+        metrics=MetricsRecorder(cfg.paths.metrics_file),
     )
 
     print("ChatCaht 已启动。按 Ctrl+C 停止。")

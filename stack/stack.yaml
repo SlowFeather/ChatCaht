@@ -1,0 +1,24 @@
+version: 1
+owner: ChatCaht
+services:
+  wake:
+    repository: ../WakeUp
+    config: configs/config.yaml
+    health: ws://127.0.0.1:8766/v1/wake/ws
+  stt:
+    repository: ../SpText
+    config: configs/config.example.yaml
+    health: ws://127.0.0.1:8790/v1/stt/ws
+  tts:
+    repository: ../GVoice
+    config: configs/config.yaml
+    health: ws://127.0.0.1:8787/v1/tts/ws
+  llm:
+    repository: ../LoLLama
+    config: configs/config.yaml
+    health: ws://127.0.0.1:8801/v1/llm/ws
+model_manifest: models.manifest.yaml
+runtime:
+  python: "3.11-3.12"
+  package_manager: uv
+  configuration_policy: example-tracked-local-ignored-secrets-from-environment

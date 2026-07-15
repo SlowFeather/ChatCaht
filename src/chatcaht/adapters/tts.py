@@ -51,9 +51,11 @@ class ServiceTtsClient(TtsClient):
                 await ws.send(json.dumps({"type": "ping"}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 if isinstance(raw, bytes):
-                    return True, "tts service reachable"
+                    return False, "tts service returned binary health response"
                 msg = json.loads(raw)
-                return True, f"tts service reachable; response={msg.get('type')}"
+                if msg.get("type") != "pong" or not msg.get("ready"):
+                    return False, str(msg.get("last_error") or f"tts service state={msg.get('state')}")
+                return True, f"tts ready state={msg.get('state')} model_loaded={msg.get('model_loaded')}"
         except Exception as exc:
             return False, str(exc)
 
