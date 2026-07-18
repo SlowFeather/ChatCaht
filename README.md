@@ -1,5 +1,29 @@
 # ChatCaht
 
+## 统一音频运行时
+
+Windows x64 语音模式默认使用 `audio.mode: unified_required`。`AudioRuntime` 是唯一打开默认通信麦克风和扬声器的进程；它用 WASAPI 持有设备，以 WebRTC APM AEC3 处理实际播放参考信号，并把 16 kHz/单声道/10 ms 的清洁 PCM 同时路由给 WakeUp 与 SpText。
+
+状态机仍是 `唤醒 -> STT -> LLM/TTS -> 可打断回复 -> 返回唤醒`。播放期间只有 AudioRuntime 连续确认 120 ms 近端人声后发出的 `near_end_start(speech_id)` 才能触发一次打断；ASR partial 不再负责打断。200 ms 前导音频会在确认后回灌，播放或取消后保留 200 ms AEC tail guard。
+
+一次唤醒应答或助手回复只建立一个连续播放流：多个 GVoice PCM 块在同一个 `play_start` / `play_end` 生命周期内进入有界队列，`play_cancel` 通过播放代际令牌使已经阻塞的旧块立即失效，避免打断后复播。
+
+AEC 和设备初始化是硬依赖。`chatcaht run` 会先启动 AudioRuntime，再启动 WakeUp、SpText 和 GVoice；`ready` 或 `aec_ready` 为 false 时不会进入旧的全双工链路。`chatcaht doctor` 会把该故障显示为 `audio(aec)`。`--no-audio`、文本命令和 mock 测试不会启动侧车；`--no-audio` 使用 WakeUp/SpText 的独立麦克风模式。
+
+`configs/config.yaml` 的 `audio:` 段是音频参数的唯一来源。托管启动会原子生成 `artifacts/run/audio-runtime.generated.json`，AudioRuntime 在握手状态中回报实际生效参数；任何配置漂移或旧协议版本都会使健康检查失败。旧配置中的 `services.audio_runtime_config` 会被兼容忽略。
+
+AudioRuntime 会监测默认通信设备变化、设备失活、连续 WASAPI 错误和采集停帧；异常时主动退出，由 Supervisor 完整重建原生音频进程。`audio.capture_stall_timeout_ms` 默认 3000 ms。若配置了明确的 `input_device` / `output_device`，系统默认设备变化不会影响该绑定，但设备失活与停帧检测仍然有效。
+
+先构建原生侧车：
+
+```powershell
+cd ..\AudioRuntime
+uvx --from cmake cmake -S . -B build -A x64
+uvx --from cmake cmake --build build --config Release --target chat-audio-runtime --parallel 1
+```
+
+托管模式要求 WakeUp 配置为 `external_pcm`，SpText 以 `--no-listen` 启动。切换唤醒/对话只改变 PCM 路由，不会重新打开声卡。
+
 ChatCaht 是一个本地全双工语音对话编排器，负责把唤醒词检测、语音识别、文本生成和语音合成串成一条完整链路，形成可实时打断的语音聊天体验。
 
 它默认对接这些组件：

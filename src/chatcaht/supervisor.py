@@ -27,6 +27,7 @@ class Supervisor:
         self.manager = ServiceManager(cfg) if cfg.supervisor.manage_services else None
         self._stop = asyncio.Event()
         self.session: VoiceSession | None = None
+        self.audio: AudioSink | None = None
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -43,6 +44,11 @@ class Supervisor:
         )
         if self.manager is not None:
             await self._ensure_services()
+
+        self.audio = self.audio_factory()
+        start_audio = getattr(self.audio, "start", None)
+        if start_audio is not None:
+            await start_audio()
 
         monitor: asyncio.Task | None = None
         if self.manager is not None:
@@ -74,16 +80,27 @@ class Supervisor:
                 monitor.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await monitor
+            if self.audio is not None:
+                with contextlib.suppress(Exception):
+                    await self.audio.close()
+                self.audio = None
         logger.info("supervisor stopped")
         return 0
 
     async def _run_session_once(self) -> None:
         cfg = self.cfg
-        wake = create_wake_client(cfg.wake, timeout=cfg.runtime.health_timeout_sec)
-        stt = create_stt_client(cfg.stt, mock_inputs=cfg.runtime.mock_text_inputs, timeout=cfg.runtime.health_timeout_sec)
+        audio = self.audio
+        if audio is None:
+            raise RuntimeError("audio runtime is not initialized")
+        wake = create_wake_client(cfg.wake, timeout=cfg.runtime.health_timeout_sec, audio_runtime=audio)
+        stt = create_stt_client(
+            cfg.stt,
+            mock_inputs=cfg.runtime.mock_text_inputs,
+            timeout=cfg.runtime.health_timeout_sec,
+            audio_runtime=audio,
+        )
         tts = create_tts_client(cfg.tts, timeout=cfg.runtime.health_timeout_sec)
         llm = create_llm_client(cfg)
-        audio: AudioSink = self.audio_factory()
         session = VoiceSession(
             duplex=cfg.duplex,
             wake=wake,
@@ -136,6 +153,9 @@ class Supervisor:
             if not unhealthy:
                 continue
             logger.warning("unhealthy services detected: %s; restarting them", ", ".join(unhealthy))
+            if "audio" in unhealthy and self.session is not None:
+                logger.error("audio runtime is unhealthy; terminating the current voice session")
+                self.session.request_stop()
             try:
                 await self.manager.stop(list(unhealthy))
                 await self.manager.start(list(unhealthy), wait=True)

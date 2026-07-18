@@ -54,6 +54,7 @@ class WakeConfig:
     mode: str = "service"
     url: str = "ws://127.0.0.1:8766/v1/wake/ws"
     auto_start_listening: bool = True
+    input_mode: str = "microphone"
     trigger_words: list[str] = field(default_factory=lambda: ["小元", "你好小元"])
 
 
@@ -63,6 +64,7 @@ class SttConfig:
     mode: str = "service"
     url: str = "ws://127.0.0.1:8790/v1/stt/ws"
     auto_start_listening: bool = True
+    input_mode: str = "microphone"
     final_events_only: bool = True
     partial_fallback_sec: float = 1.2
     partial_min_chars: int = 2
@@ -77,6 +79,25 @@ class TtsConfig:
     speaker_id: int | None = None
     speed: float | None = None
     save_last_response_wav: bool = False
+
+
+@dataclass(slots=True)
+class AudioRuntimeConfig:
+    mode: str = "unified_required"
+    url: str = "ws://127.0.0.1:8810/v1/audio/ws"
+    device_sample_rate: int = 48000
+    capture_sample_rate: int = 16000
+    frame_ms: int = 10
+    aec_tail_ms: int = 200
+    barge_in_min_speech_ms: int = 120
+    barge_in_preroll_ms: int = 200
+    barge_in_hangover_ms: int = 300
+    render_queue_ms: int = 500
+    capture_queue_ms: int = 1000
+    capture_stall_timeout_ms: int = 3000
+    vad_aggressiveness: int = 2
+    input_device: str | None = None
+    output_device: str | None = None
 
 
 @dataclass(slots=True)
@@ -129,7 +150,9 @@ class SupervisorConfig:
 @dataclass(slots=True)
 class ServicesConfig:
     uv_executable: str = "uv"
-    wakeup_dir: str = "../WakeUp/WakeUp_Project"
+    audio_runtime_dir: str = "../AudioRuntime"
+    audio_runtime_executable: str = "build/Release/chat-audio-runtime.exe"
+    wakeup_dir: str = "../WakeUp"
     wakeup_config: str = "configs/config.yaml"
     sptext_dir: str = "../SpText"
     sptext_config: str = "configs/config.example.yaml"
@@ -149,6 +172,7 @@ class Config:
     wake: WakeConfig = field(default_factory=WakeConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
+    audio: AudioRuntimeConfig = field(default_factory=AudioRuntimeConfig)
     duplex: DuplexConfig = field(default_factory=DuplexConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     services: ServicesConfig = field(default_factory=ServicesConfig)
@@ -183,12 +207,15 @@ LmStudioConfig = OpenAIConfig
 
 
 def _normalize_config_keys(data: dict[str, Any]) -> dict[str, Any]:
-    if "lmstudio" not in data:
-        return data
-    if "openai" in data:
-        raise KeyError("config cannot contain both 'openai' and legacy 'lmstudio'")
     normalized = dict(data)
-    normalized["openai"] = normalized.pop("lmstudio")
+    services = normalized.get("services")
+    if isinstance(services, dict) and "audio_runtime_config" in services:
+        normalized["services"] = dict(services)
+        normalized["services"].pop("audio_runtime_config", None)
+    if "lmstudio" in normalized:
+        if "openai" in normalized:
+            raise KeyError("config cannot contain both 'openai' and legacy 'lmstudio'")
+        normalized["openai"] = normalized.pop("lmstudio")
     return normalized
 
 
@@ -217,6 +244,43 @@ def validate_config(cfg: Config) -> None:
     }.items():
         if mode not in {"service", "mock", "disabled"}:
             raise ValueError(f"{mode_name} must be one of: service, mock, disabled")
+    for input_name, input_mode in {
+        "wake.input_mode": cfg.wake.input_mode,
+        "stt.input_mode": cfg.stt.input_mode,
+    }.items():
+        if input_mode not in {"microphone", "external_pcm"}:
+            raise ValueError(f"{input_name} must be one of: microphone, external_pcm")
+    if cfg.audio.mode not in {"unified_required", "legacy", "disabled"}:
+        raise ValueError("audio.mode must be one of: unified_required, legacy, disabled")
+    if not cfg.audio.url.startswith(("ws://", "wss://")):
+        raise ValueError("audio.url must start with ws:// or wss://")
+    if cfg.audio.mode == "unified_required" and not cfg.audio.url.startswith("ws://"):
+        raise ValueError("managed AudioRuntime currently requires a ws:// URL")
+    for name, value in {
+        "audio.device_sample_rate": cfg.audio.device_sample_rate,
+        "audio.capture_sample_rate": cfg.audio.capture_sample_rate,
+        "audio.frame_ms": cfg.audio.frame_ms,
+        "audio.aec_tail_ms": cfg.audio.aec_tail_ms,
+        "audio.barge_in_min_speech_ms": cfg.audio.barge_in_min_speech_ms,
+        "audio.barge_in_preroll_ms": cfg.audio.barge_in_preroll_ms,
+        "audio.barge_in_hangover_ms": cfg.audio.barge_in_hangover_ms,
+        "audio.render_queue_ms": cfg.audio.render_queue_ms,
+        "audio.capture_queue_ms": cfg.audio.capture_queue_ms,
+        "audio.capture_stall_timeout_ms": cfg.audio.capture_stall_timeout_ms,
+    }.items():
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+    if cfg.audio.vad_aggressiveness not in {0, 1, 2, 3}:
+        raise ValueError("audio.vad_aggressiveness must be between 0 and 3")
+    if cfg.audio.mode == "unified_required" and (
+        cfg.audio.device_sample_rate != 48000
+        or cfg.audio.capture_sample_rate != 16000
+        or cfg.audio.frame_ms != 10
+    ):
+        raise ValueError(
+            "AudioRuntime currently requires device_sample_rate=48000, "
+            "capture_sample_rate=16000, and frame_ms=10"
+        )
     if not cfg.wake.url.startswith(("ws://", "wss://")):
         raise ValueError("wake.url must start with ws:// or wss://")
     if cfg.llm.provider not in {"openai", "lollama"}:

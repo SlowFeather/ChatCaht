@@ -37,7 +37,15 @@ asyncio_mode = "auto"
 line-length = 120
 
 [tool.mypy]
-files = ["src/chatcaht/config.py", "src/chatcaht/models.py", "src/chatcaht/metrics.py", "src/chatcaht/assets.py"]
+files = [
+    "src/chatcaht/config.py",
+    "src/chatcaht/models.py",
+    "src/chatcaht/metrics.py",
+    "src/chatcaht/assets.py",
+    "src/chatcaht/adapters/tts.py",
+    "src/chatcaht/orchestrator.py",
+    "src/chatcaht/service_manager.py",
+]
 ignore_missing_imports = true
 check_untyped_defs = true
 no_implicit_optional = true

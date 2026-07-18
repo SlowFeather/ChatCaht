@@ -6,6 +6,7 @@ from .adapters.llm import create_llm_client
 from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
+from .audio_runtime import AudioRuntimeClient
 from .config import Config
 from .models import HealthCheck
 
@@ -17,12 +18,15 @@ async def run_health_checks(cfg: Config) -> list[HealthCheck]:
     tts = create_tts_client(cfg.tts, timeout=timeout)
     lm = create_llm_client(cfg)
     try:
-        checks = await asyncio.gather(
+        awaitables = [
             _check("wake", wake.health()),
             _check("stt", stt.health()),
             _check("tts", tts.health()),
             _check(f"llm({cfg.llm.provider})", lm.health()),
-        )
+        ]
+        if cfg.audio.mode == "unified_required":
+            awaitables.insert(0, _check("audio(aec)", AudioRuntimeClient(cfg.audio, timeout=timeout).health()))
+        checks = await asyncio.gather(*awaitables)
     finally:
         await lm.close()
     return list(checks)

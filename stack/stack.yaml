@@ -1,6 +1,10 @@
 version: 1
 owner: ChatCaht
 services:
+  audio:
+    repository: ../AudioRuntime
+    config: ../ChatCaht/artifacts/run/audio-runtime.generated.json
+    health: ws://127.0.0.1:8810/v1/audio/ws
   wake:
     repository: ../WakeUp
     config: configs/config.yaml

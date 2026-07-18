@@ -13,6 +13,7 @@ from .adapters.stt import SttClient
 from .adapters.tts import TtsClient
 from .adapters.wake import WakeClient
 from .audio import AudioSink
+from .audio_runtime import SpeechEvent
 from .config import DuplexConfig, RuntimeConfig
 from .models import Transcript
 from .metrics import MetricsRecorder
@@ -30,7 +31,7 @@ SHORT_REPLY_PROMPT = (
 
 
 class ChatModel:
-    async def stream_chat(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    def stream_chat(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         raise NotImplementedError
 
 
@@ -78,6 +79,8 @@ class VoiceSession:
         self._user_turn_cache: dict[int, dict[str, str]] = {}
         self._next_user_turn_id = 0
         self._current_response: asyncio.Task | None = None
+        self._wake_ack_task: asyncio.Task | None = None
+        self._confirmed_speech_ids: set[str] = set()
         self._stop = asyncio.Event()
         self._session_end = asyncio.Event()
         self._last_activity = time.monotonic()
@@ -92,8 +95,7 @@ class VoiceSession:
                     woke = await self._wait_for_wake()
                     if not woke:
                         break
-                    with contextlib.suppress(Exception):
-                        await self.wake.stop()
+                    await self._stop_wake_route()
                     await self._start_stt_with_retry()
                 else:
                     await self._start_stt_with_retry()
@@ -106,11 +108,13 @@ class VoiceSession:
                 ack_task = None
                 if self.duplex.start_mode == "wake":
                     ack_task = asyncio.create_task(self._speak_wake_ack())
+                    self._wake_ack_task = ack_task
                 reason = await self._conversation()
                 if ack_task is not None:
                     ack_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await ack_task
+                    self._wake_ack_task = None
                 logger.info("conversation #%d ended: %s", self.stats.conversations, reason)
                 await self.wait_for_idle()
 
@@ -119,8 +123,7 @@ class VoiceSession:
                 if self.duplex.start_mode != "wake" or not self.duplex.loop_forever:
                     break
                 # 回到待唤醒状态
-                with contextlib.suppress(Exception):
-                    await self.stt.stop()
+                await self._stop_stt_route()
                 if self.duplex.reset_history_per_session:
                     self._history = [{"role": "system", "content": self.duplex.system_prompt}]
                     self._clear_user_turn_cache()
@@ -139,13 +142,19 @@ class VoiceSession:
 
     async def stop(self) -> None:
         self._stop.set()
-        await self._cancel_response()
+        await self._cancel_response(cancel_playback=False)
         with contextlib.suppress(Exception):
-            await self.audio.stop()
+            await self.tts.close()
+        with contextlib.suppress(Exception):
+            await self.audio.cancel_playback()
         with contextlib.suppress(Exception):
             await self.stt.stop()
         with contextlib.suppress(Exception):
+            await self.stt.close()
+        with contextlib.suppress(Exception):
             await self.wake.stop()
+        with contextlib.suppress(Exception):
+            await self.wake.close()
 
     # ------------------------------------------------------------------ wake
 
@@ -189,19 +198,27 @@ class VoiceSession:
             return
         logger.info("speaking wake acknowledgement: %s", text)
         try:
+            await self.audio.begin_playback()
             async for chunk in self.tts.synthesize(text):
                 await self.audio.play(chunk.pcm, sample_rate=chunk.sample_rate, channels=chunk.channels)
+            await self.audio.end_playback()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("failed to speak wake acknowledgement")
+            with contextlib.suppress(Exception):
+                await self.audio.cancel_playback()
 
     # ---------------------------------------------------------- conversation
 
     async def _conversation(self) -> str:
         """跑一轮完整对话，返回结束原因: end_word / idle / stream_end / stopped。"""
         self._session_end = asyncio.Event()
+        self._confirmed_speech_ids.clear()
         self._touch_activity()
         queue: asyncio.Queue = asyncio.Queue()
         pump = asyncio.create_task(self._pump_transcripts(queue))
+        speech_pump = asyncio.create_task(self._pump_speech_events(queue))
         reason = "stopped"
         tick = 1.0
         if self.duplex.idle_timeout_sec > 0:
@@ -221,6 +238,11 @@ class VoiceSession:
                 if item is _STREAM_END:
                     reason = "stream_end"
                     break
+                if isinstance(item, BaseException):
+                    raise item
+                if isinstance(item, SpeechEvent):
+                    await self._handle_speech_event(item)
+                    continue
                 await self.handle_transcript(item)
                 if self._session_end.is_set():
                     reason = "end_word"
@@ -229,6 +251,9 @@ class VoiceSession:
             pump.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await pump
+            speech_pump.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await speech_pump
         return reason
 
     async def _pump_transcripts(self, queue: asyncio.Queue) -> None:
@@ -243,10 +268,17 @@ class VoiceSession:
                 if not getattr(self.stt, "restart_on_stream_end", False):
                     await queue.put(_STREAM_END)
                     return
+                if getattr(self.audio, "is_unified_runtime", False):
+                    await queue.put(RuntimeError("unified STT transcript stream ended"))
+                    return
                 logger.warning("stt transcript stream ended; restarting listener")
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if getattr(self.audio, "is_unified_runtime", False):
+                    logger.exception("unified STT transcript stream failed")
+                    await queue.put(exc)
+                    return
                 if not getattr(self.stt, "restart_on_stream_error", False):
                     logger.exception("stt transcript stream failed; not restartable")
                     await queue.put(_STREAM_END)
@@ -262,6 +294,52 @@ class VoiceSession:
             delay = min(delay * 2, self._reconnect_max)
             with contextlib.suppress(Exception):
                 await self.stt.start()
+
+    async def _pump_speech_events(self, queue: asyncio.Queue) -> None:
+        stream = self.audio.speech_events()
+        try:
+            async for event in stream:
+                if isinstance(event, SpeechEvent):
+                    await queue.put(event)
+        finally:
+            with contextlib.suppress(Exception):
+                await stream.aclose()
+
+    async def _handle_speech_event(self, event: SpeechEvent) -> None:
+        if event.kind == "runtime_error":
+            raise RuntimeError(event.error or "audio runtime connection failed")
+        if event.kind != "near_end_start" or not event.render_active:
+            return
+        if event.speech_id in self._confirmed_speech_ids:
+            return
+        if len(self._confirmed_speech_ids) >= 1024:
+            self._confirmed_speech_ids.clear()
+        self._confirmed_speech_ids.add(event.speech_id)
+        if not self.duplex.allow_barge_in:
+            logger.info("near-end speech detected while barge-in is disabled")
+            return
+        interrupted = False
+        started = time.monotonic()
+        ack = self._wake_ack_task
+        if ack is not None and not ack.done():
+            ack.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await ack
+            self._wake_ack_task = None
+            interrupted = True
+        if self._current_response is not None and not self._current_response.done():
+            await self._cancel_response(cancel_playback=False)
+            interrupted = True
+        if interrupted:
+            self.stats.interruptions += 1
+            await self.audio.cancel_playback()
+            self.metrics.record(
+                "barge_in_silence",
+                value_ms=(time.monotonic() - started) * 1000,
+                session_id=self._session_id,
+                speech_id=event.speech_id,
+            )
+            logger.info("confirmed near-end speech canceled current playback speech_id=%s", event.speech_id)
 
     async def handle_transcript(self, transcript: Transcript) -> None:
         raw_text = transcript.text.strip()
@@ -289,6 +367,13 @@ class VoiceSession:
                     return
         logger.info("user transcript kind=%s text=%s", transcript.kind.value, text)
         raw = transcript.raw or {}
+        if (
+            getattr(self.audio, "is_unified_runtime", False)
+            and not self.duplex.allow_barge_in
+            and str(raw.get("speech_id") or "") in self._confirmed_speech_ids
+        ):
+            logger.info("transcript from speech that began during playback ignored while barge-in is disabled")
+            return
         self.metrics.record(
             "asr_final" if transcript.is_final else "asr_partial",
             session_id=self._session_id,
@@ -307,11 +392,14 @@ class VoiceSession:
 
         if not transcript.is_final:
             if self._current_response and not self._current_response.done():
+                if getattr(self.audio, "is_unified_runtime", False):
+                    logger.debug("partial transcript does not control barge-in in unified audio mode")
+                    return
                 if self.duplex.allow_barge_in:
                     self.stats.interruptions += 1
                     logger.info("barge-in detected from partial transcript; canceling current assistant response")
                     started = time.monotonic()
-                    await self._cancel_response()
+                    await self._cancel_response(cancel_playback=self.duplex.cancel_tts_on_user_speech)
                     self.metrics.record(
                         "barge_in_silence",
                         value_ms=(time.monotonic() - started) * 1000,
@@ -322,11 +410,16 @@ class VoiceSession:
             return
 
         if self._current_response and not self._current_response.done():
+            if getattr(self.audio, "is_unified_runtime", False):
+                speech_id = str(raw.get("speech_id") or "")
+                if speech_id not in self._confirmed_speech_ids:
+                    logger.warning("transcript suppressed during playback without confirmed near-end speech")
+                    return
             if self.duplex.allow_barge_in:
                 self.stats.interruptions += 1
                 logger.info("barge-in detected; canceling current assistant response")
                 started = time.monotonic()
-                await self._cancel_response()
+                await self._cancel_response(cancel_playback=self.duplex.cancel_tts_on_user_speech)
                 self.metrics.record(
                     "barge_in_silence",
                     value_ms=(time.monotonic() - started) * 1000,
@@ -433,9 +526,11 @@ class VoiceSession:
         async def consume_segments() -> None:
             first_reply_pcm = True
             first_reply_request_at: float | None = None
+            await self.audio.begin_playback()
             while True:
                 item = await queue.get()
                 if item is None:
+                    await self.audio.end_playback()
                     return
                 kind, segment = item
                 if kind == "reply" and first_reply_request_at is None:
@@ -469,9 +564,6 @@ class VoiceSession:
                 tg.create_task(produce_segments())
                 tg.create_task(consume_segments())
         except asyncio.CancelledError:
-            if self.duplex.cancel_tts_on_user_speech:
-                with contextlib.suppress(Exception):
-                    await self.audio.stop()
             raise
         except Exception:
             logger.exception("assistant response failed")
@@ -515,7 +607,7 @@ class VoiceSession:
                 logger.exception("llm stream failed before any output; retrying once")
                 await asyncio.sleep(0.5)
 
-    async def _cancel_response(self) -> None:
+    async def _cancel_response(self, *, cancel_playback: bool = True) -> None:
         task = self._current_response
         if task is None or task.done():
             return
@@ -526,6 +618,8 @@ class VoiceSession:
             pass
         finally:
             self._current_response = None
+        if cancel_playback:
+            await self.audio.cancel_playback()
 
     def _on_response_done(self, task: asyncio.Task) -> None:
         self._touch_activity()
@@ -562,10 +656,26 @@ class VoiceSession:
                 logger.info("stt listening started; conversation active")
                 return
             except Exception:
+                if getattr(self.audio, "is_unified_runtime", False):
+                    raise
                 logger.exception("failed to start stt; retrying in %.1fs", delay)
                 if await self._sleep_unless_stopped(delay):
                     return
                 delay = min(delay * 2, self._reconnect_max)
+
+    async def _stop_wake_route(self) -> None:
+        if getattr(self.audio, "is_unified_runtime", False):
+            await self.wake.stop()
+            return
+        with contextlib.suppress(Exception):
+            await self.wake.stop()
+
+    async def _stop_stt_route(self) -> None:
+        if getattr(self.audio, "is_unified_runtime", False):
+            await self.stt.stop()
+            return
+        with contextlib.suppress(Exception):
+            await self.stt.stop()
 
     def _append_history(self, role: str, content: str) -> None:
         self._history.append({"role": role, "content": content})

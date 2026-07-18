@@ -27,6 +27,22 @@ def test_load_legacy_lmstudio_config(tmp_path: Path) -> None:
     assert cfg.lmstudio is cfg.openai
 
 
+def test_legacy_audio_runtime_config_path_is_ignored(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-audio.yaml"
+    path.write_text(
+        "audio:\n"
+        "  aec_tail_ms: 275\n"
+        "services:\n"
+        "  audio_runtime_config: configs/old-audio.json\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(path)
+
+    assert cfg.audio.aec_tail_ms == 275
+    assert not hasattr(cfg.services, "audio_runtime_config")
+
+
 def test_invalid_start_mode(tmp_path: Path) -> None:
     path = tmp_path / "bad.yaml"
     path.write_text("duplex:\n  start_mode: bad\n", encoding="utf-8")

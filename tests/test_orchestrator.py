@@ -10,6 +10,7 @@ from chatcaht.adapters.stt import MockSttClient
 from chatcaht.adapters.tts import MockTtsClient
 from chatcaht.adapters.wake import MockWakeClient
 from chatcaht.audio import NullAudioSink
+from chatcaht.audio_runtime import SpeechEvent
 from chatcaht.config import Config
 from chatcaht.models import Transcript, TranscriptKind
 from chatcaht.metrics import MetricsRecorder
@@ -56,10 +57,52 @@ async def test_unpunctuated_reply_flushes_after_timeout_and_records_metrics(tmp_
 
 
 @pytest.mark.asyncio
+async def test_assistant_response_uses_one_continuous_playback_stream() -> None:
+    cfg = Config()
+    cfg.duplex.tts_segment_min_chars = 2
+    audio = RecordingAudio()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=ScriptedModel(["第一句。", "第二句。"]),
+        audio=audio,
+    )
+
+    await session.handle_transcript(Transcript("test", TranscriptKind.FINAL))
+    await session.wait_for_idle()
+
+    assert audio.events[0] == "begin"
+    assert audio.events[-1] == "end"
+    assert audio.events.count("begin") == 1
+    assert audio.events.count("end") == 1
+    assert audio.events.count("chunk") == 2
+
+
+@pytest.mark.asyncio
 async def test_selftest_chain_passes() -> None:
     cfg = Config()
     results = await run_selftest(cfg)
     assert all(ok for _, ok, _ in results)
+
+
+@pytest.mark.asyncio
+async def test_session_stop_closes_tts_client() -> None:
+    cfg = Config()
+    tts = ClosingTts()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=tts,
+        llm=ScriptedModel(["ok."]),
+        audio=NullAudioSink(),
+    )
+
+    await session.stop()
+
+    assert tts.closed
 
 
 @pytest.mark.asyncio
@@ -113,6 +156,69 @@ async def test_partial_barge_in_cancels_without_starting_new_response() -> None:
     assert model.calls == 2
     assert session.stats.user_turns == 2
     assert session.stats.assistant_turns == 1
+
+
+@pytest.mark.asyncio
+async def test_unified_audio_requires_confirmed_near_end_for_barge_in() -> None:
+    cfg = Config()
+    audio = UnifiedNullAudio()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=ScriptedModel(["a long response that remains active long enough"], delay=0.05),
+        audio=audio,
+    )
+    await session.handle_transcript(Transcript("question", TranscriptKind.FINAL))
+    await asyncio.sleep(0.01)
+
+    await session.handle_transcript(Transcript("speaker echo", TranscriptKind.PARTIAL))
+    assert session._current_response is not None
+    assert not session._current_response.done()
+
+    await session._handle_speech_event(SpeechEvent("near_end_start", "speech-1", True))
+    assert session.stats.interruptions == 1
+    assert audio.cancellations == 1
+    assert session._current_response is None
+
+
+@pytest.mark.asyncio
+async def test_unified_audio_ignores_playback_speech_when_barge_in_is_disabled() -> None:
+    cfg = Config()
+    cfg.duplex.allow_barge_in = False
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=ScriptedModel(["must not run"]),
+        audio=UnifiedNullAudio(),
+    )
+
+    await session._handle_speech_event(SpeechEvent("near_end_start", "speech-1", True))
+    await session.handle_transcript(
+        Transcript("ignored during playback", TranscriptKind.FINAL, raw={"speech_id": "speech-1"})
+    )
+
+    assert session.stats.user_turns == 0
+    assert session.stats.interruptions == 0
+
+
+@pytest.mark.asyncio
+async def test_unified_audio_runtime_failure_terminates_session() -> None:
+    cfg = Config()
+    session = VoiceSession(
+        duplex=cfg.duplex,
+        wake=MockWakeClient(),
+        stt=MockSttClient([]),
+        tts=MockTtsClient(),
+        llm=ScriptedModel(["unused"]),
+        audio=UnifiedNullAudio(),
+    )
+
+    with pytest.raises(RuntimeError, match="capture failed"):
+        await session._handle_speech_event(SpeechEvent("runtime_error", "", False, error="capture failed"))
 
 
 @pytest.mark.asyncio
@@ -516,3 +622,38 @@ class CapturingTts:
     async def synthesize(self, text: str):
         self.texts.append(text)
         yield type("Chunk", (), {"pcm": b"\x00\x00", "sample_rate": 16000, "channels": 1})()
+
+
+class ClosingTts(MockTtsClient):
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class UnifiedNullAudio(NullAudioSink):
+    is_unified_runtime = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancellations = 0
+
+    async def cancel_playback(self) -> None:
+        self.cancellations += 1
+
+
+class RecordingAudio(NullAudioSink):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[str] = []
+
+    async def begin_playback(self) -> None:
+        self.events.append("begin")
+
+    async def play(self, pcm: bytes, *, sample_rate: int, channels: int = 1) -> None:
+        self.events.append("chunk")
+        await super().play(pcm, sample_rate=sample_rate, channels=channels)
+
+    async def end_playback(self) -> None:
+        self.events.append("end")

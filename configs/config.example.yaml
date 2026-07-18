@@ -35,6 +35,7 @@ wake:
   mode: service
   url: ws://127.0.0.1:8766/v1/wake/ws
   auto_start_listening: true
+  input_mode: external_pcm
   trigger_words: ["小元", "你好小元"]
 
 stt:
@@ -42,6 +43,7 @@ stt:
   mode: service
   url: ws://127.0.0.1:8790/v1/stt/ws
   auto_start_listening: true
+  input_mode: external_pcm
   final_events_only: true
   # Prefer SpText final events, but if the recognizer keeps streaming partials
   # without a final event, submit the last stable partial after this pause.
@@ -59,6 +61,23 @@ tts:
   # 留空时使用 GVoice 后端/说话人配置的默认语速；小于 1 会更慢。
   speed:
   save_last_response_wav: false
+
+audio:
+  mode: unified_required
+  url: ws://127.0.0.1:8810/v1/audio/ws
+  device_sample_rate: 48000
+  capture_sample_rate: 16000
+  frame_ms: 10
+  aec_tail_ms: 200
+  barge_in_min_speech_ms: 120
+  barge_in_preroll_ms: 200
+  barge_in_hangover_ms: 300
+  render_queue_ms: 500
+  capture_queue_ms: 1000
+  capture_stall_timeout_ms: 3000
+  vad_aggressiveness: 2
+  input_device:
+  output_device:
 
 duplex:
   start_mode: wake
@@ -103,6 +122,8 @@ supervisor:
 
 services:
   uv_executable: uv
+  audio_runtime_dir: ../AudioRuntime
+  audio_runtime_executable: build/Release/chat-audio-runtime.exe
   wakeup_dir: ../WakeUp
   wakeup_config: configs/config.yaml
   sptext_dir: ../SpText

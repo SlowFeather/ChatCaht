@@ -12,6 +12,7 @@ from .adapters.stt import create_stt_client
 from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
 from .audio import NullAudioSink, SoundDeviceSink, WaveFileSink
+from .audio_runtime import AudioRuntimeClient
 from .assets import provision_missing, verify_manifest
 from .config import Config, load_config
 from .health import run_health_checks
@@ -50,7 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     services = sub.add_parser("services", help="Start, stop, or inspect WakeUp/SpText/GVoice services")
     services.add_argument("action", choices=["start", "stop", "status"])
-    services.add_argument("--only", nargs="+", choices=["wake", "stt", "tts", "llm"], help="Limit action to selected services")
+    services.add_argument(
+        "--only",
+        nargs="+",
+        choices=["audio", "wake", "stt", "tts", "llm"],
+        help="Limit action to selected services",
+    )
     services.add_argument("--no-wait", action="store_true", help="Do not wait for health checks after start")
 
     chat = sub.add_parser("chat", help="Run realtime voice chat")
@@ -176,17 +182,28 @@ async def _chat(cfg: Config, args: argparse.Namespace) -> int:
         cfg.wake.mode = "mock"
         cfg.stt.mode = "mock"
         cfg.tts.mode = "mock"
+        cfg.audio.mode = "disabled"
         cfg.duplex.loop_forever = False
         if not cfg.runtime.mock_text_inputs:
             cfg.runtime.mock_text_inputs = ["你好，介绍一下你自己。", "退出"]
     if args.once:
         cfg.duplex.loop_forever = False
+    if args.no_audio:
+        _disable_unified_audio(cfg)
 
-    wake = create_wake_client(cfg.wake, timeout=cfg.runtime.health_timeout_sec)
-    stt = create_stt_client(cfg.stt, mock_inputs=cfg.runtime.mock_text_inputs, timeout=cfg.runtime.health_timeout_sec)
+    audio = _create_audio_sink(cfg, args)
+    start_audio = getattr(audio, "start", None)
+    if start_audio is not None:
+        await start_audio()
+    wake = create_wake_client(cfg.wake, timeout=cfg.runtime.health_timeout_sec, audio_runtime=audio)
+    stt = create_stt_client(
+        cfg.stt,
+        mock_inputs=cfg.runtime.mock_text_inputs,
+        timeout=cfg.runtime.health_timeout_sec,
+        audio_runtime=audio,
+    )
     tts = create_tts_client(cfg.tts, timeout=cfg.runtime.health_timeout_sec)
     lm = create_llm_client(cfg)
-    audio = _create_audio_sink(cfg, args)
     session = VoiceSession(
         duplex=cfg.duplex,
         wake=wake,
@@ -204,6 +221,7 @@ async def _chat(cfg: Config, args: argparse.Namespace) -> int:
         await session.run()
     finally:
         await lm.close()
+        await audio.close()
     print(
         "会话结束: "
         f"conversations={session.stats.conversations}, wake={session.stats.wake_events}, "
@@ -214,6 +232,8 @@ async def _chat(cfg: Config, args: argparse.Namespace) -> int:
 
 
 async def _run_daemon(cfg: Config, args: argparse.Namespace) -> int:
+    if args.no_audio:
+        _disable_unified_audio(cfg)
     if args.no_services:
         cfg.supervisor.manage_services = False
     # 守护模式必须循环运行、随时可唤醒
@@ -238,10 +258,20 @@ def _create_audio_sink(cfg: Config, args: argparse.Namespace):
         wav_path = str(Path(cfg.paths.output_dir) / "last_response.wav")
     if wav_path:
         return WaveFileSink(wav_path)
+    if cfg.audio.mode == "unified_required":
+        return AudioRuntimeClient(cfg.audio, timeout=cfg.runtime.health_timeout_sec)
+    if cfg.audio.mode == "disabled":
+        return NullAudioSink()
     try:
         return SoundDeviceSink()
     except Exception:
         return NullAudioSink()
+
+
+def _disable_unified_audio(cfg: Config) -> None:
+    cfg.audio.mode = "disabled"
+    cfg.wake.input_mode = "microphone"
+    cfg.stt.input_mode = "microphone"
 
 
 async def _text(cfg: Config, prompt: str) -> int:

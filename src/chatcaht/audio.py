@@ -9,11 +9,29 @@ logger = logging.getLogger(__name__)
 
 
 class AudioSink:
+    async def begin_playback(self) -> None:
+        """Begin one logical playback stream spanning any number of PCM chunks."""
+        return None
+
     async def play(self, pcm: bytes, *, sample_rate: int, channels: int = 1) -> None:
         raise NotImplementedError
 
+    async def end_playback(self) -> None:
+        """Finish the current logical stream and wait until queued audio is rendered."""
+        return None
+
     async def stop(self) -> None:
         return None
+
+    async def cancel_playback(self) -> None:
+        await self.stop()
+
+    async def close(self) -> None:
+        await self.stop()
+
+    async def speech_events(self):
+        if False:
+            yield None
 
 
 class NullAudioSink(AudioSink):
