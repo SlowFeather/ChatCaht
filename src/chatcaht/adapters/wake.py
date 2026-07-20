@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 import websockets
 
 from chatcaht.config import WakeConfig
-from chatcaht.models import WakeEvent
+from chatcaht.models import ServiceProbe, ServiceState, WakeEvent, service_probe_from_status
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,10 @@ class WakeClient:
     restart_on_stream_error = False
 
     async def health(self) -> tuple[bool, str]:
+        probe = await self.probe()
+        return probe.ready, probe.detail
+
+    async def probe(self) -> ServiceProbe:
         raise NotImplementedError
 
     async def start(self) -> None:
@@ -33,8 +37,8 @@ class WakeClient:
 
 
 class DisabledWakeClient(WakeClient):
-    async def health(self) -> tuple[bool, str]:
-        return True, "wake disabled"
+    async def probe(self) -> ServiceProbe:
+        return ServiceProbe(ServiceState.READY, "wake disabled")
 
     async def start(self) -> None:
         return None
@@ -51,8 +55,8 @@ class MockWakeClient(WakeClient):
     def __init__(self) -> None:
         self._queue: asyncio.Queue[WakeEvent] = asyncio.Queue()
 
-    async def health(self) -> tuple[bool, str]:
-        return True, "mock wake ready"
+    async def probe(self) -> ServiceProbe:
+        return ServiceProbe(ServiceState.READY, "mock wake ready")
 
     async def start(self) -> None:
         await self._queue.put(WakeEvent(model="mock", score=1.0, raw={"type": "wake"}))
@@ -81,18 +85,16 @@ class ServiceWakeClient(WakeClient):
         self._external_events: asyncio.Queue[WakeEvent | Exception] = asyncio.Queue(maxsize=8)
         self._external_waiters: dict[str, asyncio.Future[dict]] = {}
 
-    async def health(self) -> tuple[bool, str]:
+    async def probe(self) -> ServiceProbe:
         try:
             async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 msg = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
                 if msg.get("type") != "status":
-                    return False, f"wake service returned unexpected health response: {msg.get('type')}"
-                if not msg.get("ready"):
-                    return False, str(msg.get("last_error") or msg.get("error") or f"wake service state={msg.get('state')}")
-                return True, f"wake ready state={msg.get('state')} model_loaded={msg.get('model_loaded')}"
+                    return ServiceProbe(ServiceState.FAILED, f"wake returned unexpected response: {msg.get('type')}")
+                return service_probe_from_status(msg, service="wake")
         except Exception as exc:
-            return False, str(exc)
+            return ServiceProbe(ServiceState.FAILED, str(exc))
 
     async def start(self) -> None:
         if self.cfg.input_mode == "external_pcm":

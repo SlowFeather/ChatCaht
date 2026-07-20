@@ -160,7 +160,11 @@ class ServicesConfig:
     gvoice_config: str = "configs/config.yaml"
     lollama_dir: str = "../LoLLama"
     lollama_config: str = "configs/config.yaml"
-    startup_timeout_sec: float = 20.0
+    audio_startup_timeout_sec: float = 30.0
+    wake_startup_timeout_sec: float = 30.0
+    stt_startup_timeout_sec: float = 30.0
+    tts_startup_timeout_sec: float = 600.0
+    llm_startup_timeout_sec: float = 60.0
 
 
 @dataclass(slots=True)
@@ -212,6 +216,18 @@ def _normalize_config_keys(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(services, dict) and "audio_runtime_config" in services:
         normalized["services"] = dict(services)
         normalized["services"].pop("audio_runtime_config", None)
+    services = normalized.get("services")
+    if isinstance(services, dict) and "startup_timeout_sec" in services:
+        normalized["services"] = dict(services)
+        legacy_timeout = normalized["services"].pop("startup_timeout_sec")
+        for key in (
+            "audio_startup_timeout_sec",
+            "wake_startup_timeout_sec",
+            "stt_startup_timeout_sec",
+            "tts_startup_timeout_sec",
+            "llm_startup_timeout_sec",
+        ):
+            normalized["services"].setdefault(key, legacy_timeout)
     if "lmstudio" in normalized:
         if "openai" in normalized:
             raise KeyError("config cannot contain both 'openai' and legacy 'lmstudio'")
@@ -307,8 +323,15 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("stt.partial_min_chars must be positive")
     if cfg.tts.speed is not None and cfg.tts.speed <= 0:
         raise ValueError("tts.speed must be positive when set")
-    if cfg.services.startup_timeout_sec <= 0:
-        raise ValueError("services.startup_timeout_sec must be positive")
+    for name in (
+        "audio_startup_timeout_sec",
+        "wake_startup_timeout_sec",
+        "stt_startup_timeout_sec",
+        "tts_startup_timeout_sec",
+        "llm_startup_timeout_sec",
+    ):
+        if getattr(cfg.services, name) <= 0:
+            raise ValueError(f"services.{name} must be positive")
     if cfg.duplex.idle_timeout_sec < 0:
         raise ValueError("duplex.idle_timeout_sec must be >= 0 (0 disables idle timeout)")
     if cfg.runtime.reconnect_initial_delay_sec <= 0:

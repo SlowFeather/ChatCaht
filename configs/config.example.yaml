@@ -132,4 +132,8 @@ services:
   gvoice_config: configs/config.yaml
   lollama_dir: ../LoLLama
   lollama_config: configs/config.yaml
-  startup_timeout_sec: 20
+  audio_startup_timeout_sec: 30
+  wake_startup_timeout_sec: 30
+  stt_startup_timeout_sec: 30
+  tts_startup_timeout_sec: 600
+  llm_startup_timeout_sec: 60

@@ -10,6 +10,7 @@ from chatcaht.service_manager import (
     ManagedService,
     ProcessIdentity,
     ServiceManager,
+    _child_environment,
     _owned_pid,
     _owned_process,
     _terminate_owned_process,
@@ -38,6 +39,36 @@ def test_managed_audio_modes_select_single_microphone_owner(tmp_path) -> None:
     assert "--listen" in wake_command
     assert "--no-listen" not in stt_command
     assert "audio" not in manager.default_names()
+
+
+def test_service_startup_timeouts_are_individual(tmp_path) -> None:
+    cfg = Config()
+    cfg.paths.artifacts_dir = str(tmp_path / "artifacts")
+    cfg.paths.logs_dir = str(tmp_path / "logs")
+    cfg.services.audio_startup_timeout_sec = 11
+    cfg.services.wake_startup_timeout_sec = 12
+    cfg.services.stt_startup_timeout_sec = 13
+    cfg.services.tts_startup_timeout_sec = 14
+    cfg.services.llm_startup_timeout_sec = 15
+    manager = ServiceManager(cfg)
+
+    assert [manager.startup_timeout(name) for name in ("audio", "wake", "stt", "tts", "llm")] == [
+        11,
+        12,
+        13,
+        14,
+        15,
+    ]
+
+
+def test_child_environment_drops_inherited_virtual_env(monkeypatch) -> None:
+    monkeypatch.setenv("VIRTUAL_ENV", r"D:\other-project\.venv")
+    monkeypatch.setenv("CHATCAHT_TEST_ENV", "kept")
+
+    env = _child_environment()
+
+    assert "VIRTUAL_ENV" not in env
+    assert env["CHATCAHT_TEST_ENV"] == "kept"
 
 
 def test_managed_audio_config_is_generated_from_chatcaht_audio_settings(tmp_path) -> None:

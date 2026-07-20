@@ -12,6 +12,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from chatcaht.config import Config, LollamaConfig
+from chatcaht.models import ServiceProbe, ServiceState, service_probe_from_status
 from chatcaht.openai_client import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
@@ -43,18 +44,22 @@ class LollamaChatClient:
         await self._close_ws()
 
     async def health(self) -> tuple[bool, str]:
+        probe = await self.probe()
+        return probe.ready, probe.detail
+
+    async def probe(self) -> ServiceProbe:
         try:
             async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
                 await ws.send(json.dumps({"type": "status"}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 if isinstance(raw, bytes):
-                    return False, "lollama service returned binary health response"
+                    return ServiceProbe(ServiceState.FAILED, "lollama service returned binary health response")
                 msg = json.loads(raw)
-                if msg.get("type") != "status" or not msg.get("ready"):
-                    return False, str(msg.get("last_error") or f"lollama service state={msg.get('state')}")
-                return True, f"lollama ready state={msg.get('state')} model_loaded={msg.get('model_loaded')}"
+                if msg.get("type") != "status":
+                    return ServiceProbe(ServiceState.FAILED, f"lollama returned unexpected response: {msg.get('type')}")
+                return service_probe_from_status(msg, service="lollama")
         except Exception as exc:
-            return False, str(exc)
+            return ServiceProbe(ServiceState.FAILED, str(exc))
 
     async def stream_chat(
         self,

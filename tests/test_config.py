@@ -12,6 +12,11 @@ def test_load_example_config() -> None:
     assert cfg.openai.model == "qwen/qwen3.5-9b"
     assert cfg.wake.url == "ws://127.0.0.1:8766/v1/wake/ws"
     assert cfg.duplex.allow_barge_in is True
+    assert cfg.services.audio_startup_timeout_sec == 30
+    assert cfg.services.wake_startup_timeout_sec == 30
+    assert cfg.services.stt_startup_timeout_sec == 30
+    assert cfg.services.tts_startup_timeout_sec == 600
+    assert cfg.services.llm_startup_timeout_sec == 60
 
 
 def test_load_legacy_lmstudio_config(tmp_path: Path) -> None:
@@ -41,6 +46,19 @@ def test_legacy_audio_runtime_config_path_is_ignored(tmp_path: Path) -> None:
 
     assert cfg.audio.aec_tail_ms == 275
     assert not hasattr(cfg.services, "audio_runtime_config")
+
+
+def test_legacy_service_startup_timeout_applies_to_all_services(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-timeout.yaml"
+    path.write_text("services:\n  startup_timeout_sec: 42\n", encoding="utf-8")
+
+    cfg = load_config(path)
+
+    assert cfg.services.audio_startup_timeout_sec == 42
+    assert cfg.services.wake_startup_timeout_sec == 42
+    assert cfg.services.stt_startup_timeout_sec == 42
+    assert cfg.services.tts_startup_timeout_sec == 42
+    assert cfg.services.llm_startup_timeout_sec == 42
 
 
 def test_invalid_start_mode(tmp_path: Path) -> None:

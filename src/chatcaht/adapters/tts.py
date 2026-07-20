@@ -10,13 +10,17 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from chatcaht.config import TtsConfig
-from chatcaht.models import TtsChunk
+from chatcaht.models import ServiceProbe, ServiceState, TtsChunk, service_probe_from_status
 
 logger = logging.getLogger(__name__)
 
 
 class TtsClient:
     async def health(self) -> tuple[bool, str]:
+        probe = await self.probe()
+        return probe.ready, probe.detail
+
+    async def probe(self) -> ServiceProbe:
         raise NotImplementedError
 
     def synthesize(self, text: str) -> AsyncIterator[TtsChunk]:
@@ -27,8 +31,8 @@ class TtsClient:
 
 
 class DisabledTtsClient(TtsClient):
-    async def health(self) -> tuple[bool, str]:
-        return True, "tts disabled"
+    async def probe(self) -> ServiceProbe:
+        return ServiceProbe(ServiceState.READY, "tts disabled")
 
     async def synthesize(self, text: str) -> AsyncIterator[TtsChunk]:
         if False:
@@ -36,8 +40,8 @@ class DisabledTtsClient(TtsClient):
 
 
 class MockTtsClient(TtsClient):
-    async def health(self) -> tuple[bool, str]:
-        return True, "mock tts ready"
+    async def probe(self) -> ServiceProbe:
+        return ServiceProbe(ServiceState.READY, "mock tts ready")
 
     async def synthesize(self, text: str) -> AsyncIterator[TtsChunk]:
         await asyncio.sleep(0)
@@ -52,19 +56,19 @@ class ServiceTtsClient(TtsClient):
         self._request_lock = asyncio.Lock()
         self._closed = False
 
-    async def health(self) -> tuple[bool, str]:
+    async def probe(self) -> ServiceProbe:
         try:
             async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
                 await ws.send(json.dumps({"type": "ping"}))
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 if isinstance(raw, bytes):
-                    return False, "tts service returned binary health response"
+                    return ServiceProbe(ServiceState.FAILED, "tts service returned binary health response")
                 msg = json.loads(raw)
-                if msg.get("type") != "pong" or not msg.get("ready"):
-                    return False, str(msg.get("last_error") or f"tts service state={msg.get('state')}")
-                return True, f"tts ready state={msg.get('state')} model_loaded={msg.get('model_loaded')}"
+                if msg.get("type") != "pong":
+                    return ServiceProbe(ServiceState.FAILED, f"tts returned unexpected response: {msg.get('type')}")
+                return service_probe_from_status(msg, service="tts")
         except Exception as exc:
-            return False, str(exc)
+            return ServiceProbe(ServiceState.FAILED, str(exc))
 
     async def synthesize(self, text: str) -> AsyncIterator[TtsChunk]:
         sample_rate = 16000

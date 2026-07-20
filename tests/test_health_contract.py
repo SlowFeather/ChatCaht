@@ -5,9 +5,11 @@ import json
 import pytest
 import websockets
 
+import chatcaht.health as health
 from chatcaht.adapters.stt import ServiceSttClient
 from chatcaht.adapters.tts import ServiceTtsClient
-from chatcaht.config import SttConfig, TtsConfig
+from chatcaht.config import Config, SttConfig, TtsConfig
+from chatcaht.models import ServiceState, service_probe_from_status
 
 
 HEALTH = {
@@ -52,3 +54,25 @@ async def test_tts_health_requires_ready_pong() -> None:
     finally:
         server.close()
         await server.wait_closed()
+
+
+def test_service_probe_normalizes_lifecycle_states() -> None:
+    assert service_probe_from_status({"ready": False, "state": "loading"}, service="test").state is ServiceState.STARTING
+    assert service_probe_from_status({"ready": False, "state": "degraded"}, service="test").state is ServiceState.DEGRADED
+    assert service_probe_from_status({"ready": False, "state": "fatal"}, service="test").state is ServiceState.FAILED
+    assert service_probe_from_status({"ready": True, "state": "failed"}, service="test").state is ServiceState.READY
+
+
+def test_deep_soundcard_check_requires_input_and_output(monkeypatch) -> None:
+    devices = {
+        "input": {"name": "Microphone", "max_input_channels": 2, "max_output_channels": 0},
+        "output": {"name": "Speakers", "max_input_channels": 0, "max_output_channels": 2},
+    }
+    monkeypatch.setattr(health.sd, "query_devices", lambda _device, kind: devices[kind])
+
+    check = health._soundcard_check(Config())
+
+    assert check.ok
+    assert check.state is ServiceState.READY
+    assert "Microphone" in check.detail
+    assert "Speakers" in check.detail

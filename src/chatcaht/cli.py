@@ -15,7 +15,7 @@ from .audio import NullAudioSink, SoundDeviceSink, WaveFileSink
 from .audio_runtime import AudioRuntimeClient
 from .assets import provision_missing, verify_manifest
 from .config import Config, load_config
-from .health import run_health_checks
+from .health import run_deep_health_checks, run_health_checks
 from .logging import setup_logging
 from .metrics import MetricsRecorder
 from .orchestrator import VoiceSession
@@ -46,7 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=default_config_path(), help="Path to ChatCaht YAML config")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="Check OpenAI-compatible model API and voice service connectivity")
+    doctor = sub.add_parser("doctor", help="Check model API and voice service readiness")
+    doctor.add_argument("--deep", action="store_true", help="Also verify assets, CUDA, imports, model, AEC, and ports")
+    doctor.add_argument("--manifest", default="stack/models.manifest.yaml")
     sub.add_parser("selftest", help="Run mock end-to-end orchestration checks")
 
     services = sub.add_parser("services", help="Start, stop, or inspect WakeUp/SpText/GVoice services")
@@ -96,7 +98,7 @@ async def _amain(args: argparse.Namespace) -> int:
     )
 
     if args.command == "doctor":
-        return await _doctor(cfg)
+        return await _doctor(cfg, deep=args.deep, manifest=args.manifest)
     if args.command == "selftest":
         return await _selftest(cfg)
     if args.command == "services":
@@ -133,12 +135,13 @@ def _assets(args: argparse.Namespace) -> int:
     return 0 if ok else 2
 
 
-async def _doctor(cfg: Config) -> int:
-    checks = await run_health_checks(cfg)
+async def _doctor(cfg: Config, *, deep: bool = False, manifest: str = "stack/models.manifest.yaml") -> int:
+    checks = await run_deep_health_checks(cfg, manifest=manifest) if deep else await run_health_checks(cfg)
     ok_all = True
     for check in checks:
         mark = "OK" if check.ok else "FAIL"
-        print(f"[{mark}] {check.name}: {check.detail}")
+        state = f" {check.state.value}" if check.state is not None else ""
+        print(f"[{mark}]{state} {check.name}: {check.detail}")
         ok_all = ok_all and check.ok
     return 0 if ok_all else 2
 
@@ -172,7 +175,7 @@ async def _services(cfg: Config, args: argparse.Namespace) -> int:
         running = "running" if status.running else "stopped"
         pid = status.pid if status.pid is not None else "-"
         detail = "stopped" if args.action == "stop" and display_ok else status.detail
-        print(f"[{mark}] {status.name}: {running} pid={pid} {detail} log={status.log_file}")
+        print(f"[{mark}] {status.name}: {status.state.value} {running} pid={pid} {detail} log={status.log_file}")
         ok_all = ok_all and display_ok
     return 0 if ok_all else 2
 

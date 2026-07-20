@@ -117,6 +117,11 @@ uv run chatcaht init-config --out configs/config.yaml
 uv run chatcaht run
 ```
 
+服务统一使用 `STARTING / READY / DEGRADED / FAILED` 生命周期。AudioRuntime、WakeUp、SpText、
+GVoice/CosyVoice 和 LoLLama 全部达到 `READY` 后才创建语音会话；模型加载或 warmup 期间保持
+`STARTING`，Supervisor 不会把它当作崩溃循环重启。`DEGRADED` 服务会阻止新会话，但保留进程供其自行恢复，
+只有 `FAILED` 才会触发托管重启。
+
 - 说唤醒词（如"小元"）开始对话，单独说"退出/再见/拜拜/闭嘴"或静默超时后回到待命，可反复唤醒
 - 加 `--no-services` 表示底层服务由你自己管理，ChatCaht 只做编排
 - 按 Ctrl+C 停止
@@ -140,6 +145,13 @@ uv run chatcaht services stop
 
 ```powershell
 uv run chatcaht doctor
+```
+
+执行完整的本机启动前检查（模型哈希、CUDA/FP16、CosyVoice 导入依赖、LM Studio 模型、
+声卡/AEC 和端口占用）：
+
+```powershell
+uv run chatcaht doctor --deep
 ```
 
 运行自检：

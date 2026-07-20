@@ -21,6 +21,7 @@ from .adapters.tts import create_tts_client
 from .adapters.wake import create_wake_client
 from .audio_runtime import AudioRuntimeClient
 from .config import Config
+from .models import ServiceProbe, ServiceState
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class ServiceStatus:
     ok: bool
     detail: str
     log_file: Path
+    state: ServiceState = ServiceState.FAILED
 
 
 @dataclass(slots=True)
@@ -172,19 +174,38 @@ class ServiceManager:
             _remove_pid_file(service.pid_file)
             self._start_process(service)
         if wait:
-            deadline = time.monotonic() + self.cfg.services.startup_timeout_sec
-            while time.monotonic() < deadline:
-                statuses = await self.status(names)
-                if all(s.ok for s in statuses):
-                    logger.info("all requested services healthy: %s", ", ".join(names))
-                    return statuses
-                await asyncio.sleep(0.5)
-            logger.warning(
-                "services not all healthy within %.0fs: %s",
-                self.cfg.services.startup_timeout_sec,
-                ", ".join(f"{s.name}={s.detail}" for s in await self.status(names) if not s.ok),
-            )
+            statuses = await self.wait_ready(names)
+            if all(status.ok for status in statuses):
+                logger.info("all requested services READY: %s", ", ".join(names))
+            else:
+                logger.warning(
+                    "services did not reach READY: %s",
+                    ", ".join(f"{s.name}={s.state.value}:{s.detail}" for s in statuses if not s.ok),
+                )
+            return statuses
         return await self.status(names)
+
+    async def wait_ready(self, names: list[ServiceName] | None = None) -> list[ServiceStatus]:
+        names = names or self.default_names()
+        return list(await asyncio.gather(*(self._wait_until_ready(name) for name in names)))
+
+    async def _wait_until_ready(self, name: ServiceName) -> ServiceStatus:
+        timeout = self.startup_timeout(name)
+        deadline = time.monotonic() + timeout
+        status = await self.status_one(name)
+        while status.state is not ServiceState.READY and time.monotonic() < deadline:
+            if status.state is ServiceState.FAILED and not status.running:
+                break
+            await asyncio.sleep(0.5)
+            status = await self.status_one(name)
+        if status.state is not ServiceState.READY:
+            status.detail = f"startup timeout after {timeout:.0f}s: {status.detail}"
+            if status.state is ServiceState.STARTING:
+                status.state = ServiceState.FAILED
+        return status
+
+    def startup_timeout(self, name: ServiceName) -> float:
+        return float(getattr(self.cfg.services, f"{name}_startup_timeout_sec"))
 
     async def stop(self, names: list[ServiceName] | None = None) -> list[ServiceStatus]:
         names = names or self.default_names()
@@ -239,20 +260,45 @@ class ServiceManager:
         process = _owned_process(service)
         pid = process.pid if process is not None else None
         running = process is not None
-        ok, detail = await self._health(name)
-        return ServiceStatus(name=name, running=running, pid=pid, ok=ok, detail=detail, log_file=service.log_file)
+        probe = await self._probe(name)
+        if (
+            probe.state is ServiceState.FAILED
+            and probe.raw is None
+            and running
+            and self._owned_process_age(service) < self.startup_timeout(name)
+        ):
+            probe = ServiceProbe(ServiceState.STARTING, probe.detail, probe.raw)
+        if not running and probe.raw is None and probe.state is not ServiceState.READY:
+            probe.state = ServiceState.FAILED
+        return ServiceStatus(
+            name=name,
+            running=running,
+            pid=pid,
+            ok=probe.ready,
+            detail=probe.detail,
+            log_file=service.log_file,
+            state=probe.state,
+        )
 
-    async def _health(self, name: ServiceName) -> tuple[bool, str]:
+    async def _probe(self, name: ServiceName) -> ServiceProbe:
         timeout = self.cfg.runtime.health_timeout_sec
         if name == "audio":
-            return await AudioRuntimeClient(self.cfg.audio, timeout=timeout).health()
+            return await AudioRuntimeClient(self.cfg.audio, timeout=timeout).probe()
         if name == "wake":
-            return await create_wake_client(self.cfg.wake, timeout=timeout).health()
+            return await create_wake_client(self.cfg.wake, timeout=timeout).probe()
         if name == "stt":
-            return await create_stt_client(self.cfg.stt, timeout=timeout).health()
+            return await create_stt_client(self.cfg.stt, timeout=timeout).probe()
         if name == "llm":
-            return await LollamaChatClient(self.cfg.lollama, timeout=timeout).health()
-        return await create_tts_client(self.cfg.tts, timeout=timeout).health()
+            return await LollamaChatClient(self.cfg.lollama, timeout=timeout).probe()
+        return await create_tts_client(self.cfg.tts, timeout=timeout).probe()
+
+    @staticmethod
+    def _owned_process_age(service: ManagedService) -> float:
+        record = _read_pid_record(service.pid_file) or {}
+        try:
+            return max(0.0, time.time() - float(record["created_at"]))
+        except (KeyError, TypeError, ValueError):
+            return float("inf")
 
     def _start_process(self, service: ManagedService) -> None:
         if not service.cwd.exists():
@@ -277,6 +323,7 @@ class ServiceManager:
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
+                env=_child_environment(),
                 creationflags=creationflags,
                 start_new_session=start_new_session,
             )
@@ -328,6 +375,12 @@ async def _ignore_errors(awaitable) -> None:
 
 def _resolve(path: str) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def _child_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    return env
 
 
 def _resolve_from(base: Path, path: str) -> Path:

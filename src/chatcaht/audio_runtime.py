@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import websockets
 
 from .config import AudioRuntimeConfig
+from .models import ServiceProbe, ServiceState, service_probe_from_status
 
 logger = logging.getLogger(__name__)
 
@@ -206,18 +207,28 @@ class AudioRuntimeClient:
         await self._ensure_connection()
 
     async def health(self) -> tuple[bool, str]:
+        probe = await self.probe()
+        return probe.ready, probe.detail
+
+    async def probe(self) -> ServiceProbe:
         try:
             async with websockets.connect(self.cfg.url, open_timeout=self.timeout, max_size=None) as ws:
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 msg = json.loads(raw)
                 if msg.get("type") != "status":
-                    return False, f"audio runtime returned {msg.get('type')}"
+                    return ServiceProbe(ServiceState.FAILED, f"audio runtime returned {msg.get('type')}")
                 error = self._status_error(msg)
                 if error:
-                    return False, error
-                return True, f"audio ready input={msg.get('input_device')} output={msg.get('output_device')}"
+                    probe = service_probe_from_status(msg, service="audio")
+                    if probe.ready:
+                        probe.state = ServiceState.FAILED
+                    probe.detail = error
+                    return probe
+                probe = service_probe_from_status(msg, service="audio")
+                probe.detail = f"audio ready input={msg.get('input_device')} output={msg.get('output_device')}"
+                return probe
         except Exception as exc:
-            return False, str(exc)
+            return ServiceProbe(ServiceState.FAILED, str(exc))
 
     async def begin_playback(self) -> None:
         if self._playback_stream_id is not None:

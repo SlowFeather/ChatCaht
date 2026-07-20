@@ -12,6 +12,7 @@ from .adapters.wake import create_wake_client
 from .audio import AudioSink
 from .config import Config
 from .metrics import MetricsRecorder
+from .models import ServiceState
 from .orchestrator import VoiceSession
 from .service_manager import ServiceManager
 
@@ -24,7 +25,9 @@ class Supervisor:
     def __init__(self, cfg: Config, *, audio_factory) -> None:
         self.cfg = cfg
         self.audio_factory = audio_factory
-        self.manager = ServiceManager(cfg) if cfg.supervisor.manage_services else None
+        self.manage_services = cfg.supervisor.manage_services
+        self.manager = ServiceManager(cfg)
+        self._service_op_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self.session: VoiceSession | None = None
         self.audio: AudioSink | None = None
@@ -39,20 +42,17 @@ class Supervisor:
         sup = self.cfg.supervisor
         logger.info(
             "supervisor starting: manage_services=%s health_check_interval=%.0fs",
-            self.manager is not None,
+            self.manage_services,
             sup.health_check_interval_sec,
         )
-        if self.manager is not None:
-            await self._ensure_services()
+        await self._ensure_services()
 
         self.audio = self.audio_factory()
         start_audio = getattr(self.audio, "start", None)
         if start_audio is not None:
             await start_audio()
 
-        monitor: asyncio.Task | None = None
-        if self.manager is not None:
-            monitor = asyncio.create_task(self._monitor_services())
+        monitor = asyncio.create_task(self._monitor_services())
 
         delay = sup.restart_delay_sec
         try:
@@ -73,13 +73,11 @@ class Supervisor:
                 if await self._sleep_unless_stopped(delay):
                     break
                 delay = min(delay * 2, sup.max_restart_delay_sec)
-                if self.manager is not None:
-                    await self._ensure_services()
+                await self._ensure_services()
         finally:
-            if monitor is not None:
-                monitor.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await monitor
+            monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor
             if self.audio is not None:
                 with contextlib.suppress(Exception):
                     await self.audio.close()
@@ -129,17 +127,23 @@ class Supervisor:
                 await llm.close()
 
     async def _ensure_services(self) -> None:
-        assert self.manager is not None
         try:
-            statuses = await self.manager.start(wait=True)
-            for status in statuses:
-                if not status.ok:
-                    logger.warning("service %s not healthy after start: %s", status.name, status.detail)
+            async with self._service_op_lock:
+                if self.manage_services:
+                    statuses = await self.manager.start(wait=True)
+                else:
+                    statuses = await self.manager.wait_ready()
+            not_ready = [status for status in statuses if status.state is not ServiceState.READY]
+            if not_ready:
+                raise RuntimeError(
+                    "required services not READY: "
+                    + ", ".join(f"{status.name}={status.state.value}:{status.detail}" for status in not_ready)
+                )
         except Exception:
             logger.exception("failed to start managed services")
+            raise
 
     async def _monitor_services(self) -> None:
-        assert self.manager is not None
         interval = self.cfg.supervisor.health_check_interval_sec
         while not self._stop.is_set():
             if await self._sleep_unless_stopped(interval):
@@ -149,18 +153,30 @@ class Supervisor:
             except Exception:
                 logger.exception("service health check failed")
                 continue
-            unhealthy = [s.name for s in statuses if not s.ok]
-            if not unhealthy:
+            not_ready = [status for status in statuses if status.state is not ServiceState.READY]
+            if not not_ready:
                 continue
-            logger.warning("unhealthy services detected: %s; restarting them", ", ".join(unhealthy))
-            if "audio" in unhealthy and self.session is not None:
-                logger.error("audio runtime is unhealthy; terminating the current voice session")
+            logger.warning(
+                "required services not READY: %s",
+                ", ".join(f"{status.name}={status.state.value}" for status in not_ready),
+            )
+            if self.session is not None:
+                logger.error("service readiness lost; terminating the current voice session")
                 self.session.request_stop()
+            failed = [status.name for status in not_ready if status.state is ServiceState.FAILED]
+            if not failed or not self.manage_services:
+                continue
             try:
-                await self.manager.stop(list(unhealthy))
-                await self.manager.start(list(unhealthy), wait=True)
+                async with self._service_op_lock:
+                    current = await self.manager.status(list(failed))
+                    still_failed = [status.name for status in current if status.state is ServiceState.FAILED]
+                    if not still_failed:
+                        continue
+                    logger.warning("restarting FAILED services: %s", ", ".join(still_failed))
+                    await self.manager.stop(list(still_failed))
+                    await self.manager.start(list(still_failed), wait=True)
             except Exception:
-                logger.exception("failed to restart services: %s", unhealthy)
+                logger.exception("failed to restart services: %s", failed)
 
     async def _sleep_unless_stopped(self, delay: float) -> bool:
         with contextlib.suppress(TimeoutError):

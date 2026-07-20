@@ -166,7 +166,7 @@ async def test_lollama_health_requires_ready_status() -> None:
         client = LollamaChatClient(LollamaConfig(url=url), timeout=2.0)
         ok, detail = await client.health()
         assert ok
-        assert "ready" in detail
+        assert "READY" in detail
 
 
 @pytest.mark.asyncio
